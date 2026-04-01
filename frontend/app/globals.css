@@ -1,0 +1,78 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+::selection {
+  background: rgba(17, 17, 17, 0.92);
+  color: white;
+}
+
+@layer base {
+  * {
+    @apply border-black/10;
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-display tracking-tight text-black;
+  }
+
+  a {
+    @apply transition-colors duration-300;
+  }
+}
+
+@layer components {
+  .glass-panel {
+    @apply rounded-[28px] border border-black/[0.08] bg-white/95 shadow-glass;
+  }
+
+  .glass-stage {
+    @apply rounded-[36px] border border-white/60 bg-white/40 shadow-stage backdrop-blur-2xl;
+  }
+
+  .section-shell {
+    @apply mx-auto max-w-7xl px-4 sm:px-6 lg:px-8;
+  }
+
+  .section-heading {
+    @apply max-w-3xl space-y-4;
+  }
+
+  .section-heading-eyebrow {
+    @apply text-sm uppercase tracking-[0.32em] text-black/55;
+  }
+
+  .button-primary {
+    @apply inline-flex items-center justify-center rounded-full bg-black px-5 py-3 text-sm font-semibold text-white transition duration-300 hover:scale-[1.02] hover:shadow-glow;
+  }
+
+  .button-secondary {
+    @apply inline-flex items-center justify-center rounded-full border border-black/15 bg-white px-5 py-3 text-sm font-semibold text-black transition duration-300 hover:border-black/35 hover:bg-black/[0.04];
+  }
+
+  .input-shell {
+    @apply w-full rounded-2xl border border-black/10 bg-black/[0.03] px-4 py-3 text-black outline-none transition duration-300 placeholder:text-black/35 focus:border-black/30 focus:bg-black/[0.05];
+  }
+
+  .hash-chip {
+    @apply rounded-full border border-black/10 bg-black px-3 py-1 font-mono text-[11px] uppercase tracking-[0.24em] text-white/80;
+  }
+}

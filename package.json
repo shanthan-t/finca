@@ -1,0 +1,11 @@
+{
+  "name": "finca",
+  "private": true,
+  "scripts": {
+    "dev": "bash ./scripts/dev.sh",
+    "dev:frontend": "npm --prefix frontend run dev",
+    "dev:backend": "python3 -m uvicorn backend.main:app --reload",
+    "install:frontend": "npm --prefix frontend install",
+    "install:backend": "python3 -m pip install -r backend/requirements.txt"
+  }
+}
