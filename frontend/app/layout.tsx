@@ -30,7 +30,7 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
   } as CSSProperties;
 
   return (
-    <html lang={language} className="bg-[#eef2f7]">
+    <html lang={language} className="bg-[#eef2f7]" data-scroll-behavior="smooth">
       <body
         style={fontStyle}
         className="min-h-screen bg-hero-radial font-body text-finca-mist antialiased"

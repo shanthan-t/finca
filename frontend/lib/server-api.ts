@@ -1,10 +1,12 @@
-import { env } from "@/lib/env";
+import { getServerApiUrl, hasServerApiUrl } from "@/lib/server-env";
 
-export function getServerApiUrl() {
-  return env.apiUrl;
-}
+export { getServerApiUrl } from "@/lib/server-env";
 
 export async function postBlockchainJson<T>(path: string, payload: unknown): Promise<T> {
+  if (!hasServerApiUrl()) {
+    throw new Error("API_URL is missing or invalid. Point it to your FastAPI service before using blockchain actions.");
+  }
+
   const url = `${getServerApiUrl()}${path}`;
   console.log(`[API] Upstream POST: ${url}`);
 
@@ -45,6 +47,15 @@ export async function postBlockchainJson<T>(path: string, payload: unknown): Pro
 }
 
 export async function forwardBlockchainPost(request: Request, path: string) {
+  if (!hasServerApiUrl()) {
+    return Response.json(
+      {
+        message: "API_URL is missing or invalid. Point it to your FastAPI service before using blockchain actions."
+      },
+      { status: 500 }
+    );
+  }
+
   let payload: unknown;
 
   try {

@@ -7,27 +7,23 @@ import QRCode from "qrcode";
 
 import { useLanguage } from "@/components/providers/language-provider";
 import { createBatch, extractReturnedBlock } from "@/lib/api";
+import { createSuggestedBatchId } from "@/lib/batch-id";
 import { configState } from "@/lib/env";
 import { persistBatchAndGenesis, persistBatchEnhancements } from "@/lib/persistence";
 import { getAbsoluteTraceUrl } from "@/lib/trace";
 
-function generateBatchId() {
-  const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const serial = Math.floor(100 + Math.random() * 900);
-  return `FINCA-${stamp}-${serial}`;
-}
-
 interface CreateBatchFormProps {
   mode?: "full" | "simple";
+  initialBatchId?: string;
 }
 
-export function CreateBatchForm({ mode = "full" }: CreateBatchFormProps) {
+export function CreateBatchForm({ mode = "full", initialBatchId }: CreateBatchFormProps) {
   const { t } = useLanguage();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
   const [form, setForm] = useState({
-    batch_id: generateBatchId(),
+    batch_id: initialBatchId ?? createSuggestedBatchId(),
     crop_name: "",
     farmer_name: "",
     farm_location: "",

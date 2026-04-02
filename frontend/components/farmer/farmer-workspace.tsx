@@ -19,9 +19,10 @@ interface FarmerWorkspaceProps {
   batches: BatchSummary[];
   batchOptions: Batch[];
   totalBlocks: number;
+  initialBatchId: string;
 }
 
-export function FarmerWorkspace({ batches, batchOptions, totalBlocks }: FarmerWorkspaceProps) {
+export function FarmerWorkspace({ batches, batchOptions, totalBlocks, initialBatchId }: FarmerWorkspaceProps) {
   const { t } = useLanguage();
   const defaultPanel: FarmerPanel = batches.length > 0 ? "batches" : "create";
   const [activePanel, setActivePanel] = useState<FarmerPanel>(defaultPanel);
@@ -63,10 +64,10 @@ export function FarmerWorkspace({ batches, batchOptions, totalBlocks }: FarmerWo
                 type="button"
                 onClick={() => setActivePanel(option.id)}
                 className={cn(
-                  "inline-flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm transition duration-300",
+                  "inline-flex shrink-0 items-center gap-2 rounded-full border px-4 py-2 text-sm font-medium transition duration-300",
                   activePanel === option.id
                     ? "border-black/15 bg-white text-black shadow-[0_8px_20px_rgba(15,23,42,0.08)]"
-                    : "border-black/10 bg-black/[0.03] text-black/68 hover:border-black/20 hover:text-black"
+                    : "border-black/10 bg-white/72 text-black/[0.74] shadow-[0_6px_18px_rgba(15,23,42,0.05)] hover:border-black/20 hover:bg-white hover:text-black"
                 )}
               >
                 <Icon className="h-4 w-4" />
@@ -90,7 +91,7 @@ export function FarmerWorkspace({ batches, batchOptions, totalBlocks }: FarmerWo
             <BatchGrid batches={batches} emptyActionHref="/" emptyActionLabel={t("common.createBatch")} mode="simple" />
           ) : null}
 
-          {activePanel === "create" ? <CreateBatchForm mode="simple" /> : null}
+          {activePanel === "create" ? <CreateBatchForm mode="simple" initialBatchId={initialBatchId} /> : null}
 
           {activePanel === "event" ? (
             <AddEventForm batches={batchOptions} mode="simple" initialBatchId={batchOptions[0]?.batch_id ?? ""} />

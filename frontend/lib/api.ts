@@ -24,7 +24,7 @@ class ApiError extends Error {
 
 async function postJson<T>(path: string, payload: unknown): Promise<T> {
   if (!configState.hasApi) {
-    throw new ApiError("NEXT_PUBLIC_API_URL is missing. Point it to your FastAPI service before using blockchain actions.");
+    throw new ApiError("NEXT_PUBLIC_API_URL is missing or invalid. Point it to your FastAPI service before using blockchain actions.");
   }
 
   const response = await fetch(`${appApiBase}${path}`, {

@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 
 import { FarmerWorkspace } from "@/components/farmer/farmer-workspace";
 import { getBatchOptions, getDashboardData } from "@/lib/data";
+import { createSuggestedBatchId } from "@/lib/batch-id";
 import { getRequestLanguage } from "@/lib/i18n-server";
 import { createTranslator } from "@/lib/i18n";
 
@@ -16,6 +17,7 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function FarmPage() {
   const [batches, batchOptions] = await Promise.all([getDashboardData(), getBatchOptions()]);
   const totalBlocks = batches.reduce((total, batch) => total + batch.block_count, 0);
+  const initialBatchId = createSuggestedBatchId();
 
-  return <FarmerWorkspace batches={batches} batchOptions={batchOptions} totalBlocks={totalBlocks} />;
+  return <FarmerWorkspace batches={batches} batchOptions={batchOptions} totalBlocks={totalBlocks} initialBatchId={initialBatchId} />;
 }

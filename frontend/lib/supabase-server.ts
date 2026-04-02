@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 
+import { isValidHttpUrl } from "@/lib/env-utils";
 import type { Database } from "@/lib/types";
 
 const clientOptions = {
@@ -31,6 +32,11 @@ export function createSupabaseAdminClient() {
     return null;
   }
 
+  if (!isValidHttpUrl(url)) {
+    console.error("[Supabase] Invalid NEXT_PUBLIC_SUPABASE_URL. Expected a full http(s) URL.");
+    return null;
+  }
+
   if (!serviceKey) {
     console.warn("[Supabase] SUPABASE_SERVICE_ROLE_KEY is missing. Falling back to anon key for admin operations (may fail due to RLS).");
   }
@@ -49,7 +55,7 @@ export function createSupabaseReadClient() {
   const url = getSupabaseUrl();
   const key = getSupabaseAnonKey();
 
-  if (!url || !key) {
+  if (!url || !key || !isValidHttpUrl(url)) {
     return null;
   }
 
@@ -57,9 +63,9 @@ export function createSupabaseReadClient() {
 }
 
 export function hasServerSupabaseAccess() {
-  return Boolean(getSupabaseUrl() && (getSupabaseServiceRoleKey() || getSupabaseAnonKey()));
+  return Boolean(isValidHttpUrl(getSupabaseUrl()) && (getSupabaseServiceRoleKey() || getSupabaseAnonKey()));
 }
 
 export function hasSupabaseServiceRole() {
-  return Boolean(getSupabaseUrl() && getSupabaseServiceRoleKey());
+  return Boolean(isValidHttpUrl(getSupabaseUrl()) && getSupabaseServiceRoleKey());
 }
