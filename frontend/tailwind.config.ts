@@ -13,13 +13,13 @@ const config: Config = {
           night: "#ffffff",
           surface: "#f5f5f5",
           glass: "rgba(255, 255, 255, 0.78)",
-          mist: "#111111",
-          mint: "#111111",
-          lime: "#111111",
-          cyan: "#4b5563",
-          gold: "#111111",
-          ember: "#dc2626",
-          emerald: "#16a34a"
+          mist: "#ecfdf5",
+          mint: "#10b981",
+          lime: "#84cc16",
+          cyan: "#0ea5e9",
+          gold: "#f59e0b",
+          ember: "#ef4444",
+          emerald: "#059669"
         }
       },
       fontFamily: {

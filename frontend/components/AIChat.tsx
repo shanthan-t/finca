@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, Loader2, Mic, MicOff, SendHorizontal, Sparkles, Volume2 } from "lucide-react";
+import { Bot, Check, ChevronDown, Loader2, Mic, MicOff, SendHorizontal, Sparkles, Volume2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { ChatMessage } from "@/components/ChatMessage";
@@ -18,6 +18,99 @@ function createMessageId() {
   }
 
   return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+interface CustomSelectProps {
+  value: string;
+  onChange: (value: string) => void;
+  options: { value: string; label: string; subLabel?: string }[];
+}
+
+function CustomSelect({ value, onChange, options }: CustomSelectProps) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, []);
+
+  const currentOption = options.find((o) => o.value === value) || options[0];
+
+  return (
+    <div ref={ref} className="relative w-full">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={cn(
+          "input-shell flex w-full items-center justify-between text-left transition-all duration-300",
+          open && "border-black/20 bg-black/[0.05]"
+        )}
+      >
+        <span className="block truncate">{currentOption?.label}</span>
+        <ChevronDown
+          className={cn(
+            "h-4 w-4 shrink-0 text-black/50 transition-transform duration-300",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <motion.div
+            initial={{ opacity: 0, y: 4, scale: 0.98 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: 4, scale: 0.98 }}
+            transition={{ duration: 0.15, ease: [0.23, 1, 0.32, 1] }}
+            className="absolute left-0 mt-2 w-full z-[100] overflow-hidden rounded-2xl border border-black/[0.08] bg-white/95 p-1.5 shadow-[0_20px_60px_rgba(0,0,0,0.12),0_0_0_1px_rgba(0,0,0,0.04)] backdrop-blur-2xl"
+          >
+            {options.map((option, index) => {
+              const isActive = option.value === value;
+              return (
+                <motion.button
+                  key={option.value}
+                  type="button"
+                  initial={{ opacity: 0, x: -4 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: index * 0.03, duration: 0.15 }}
+                  onClick={() => {
+                    onChange(option.value);
+                    setOpen(false);
+                  }}
+                  className={cn(
+                    "flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left text-sm transition-all duration-200",
+                    isActive
+                      ? "bg-black/[0.06] font-medium text-black"
+                      : "text-black/65 hover:bg-black/[0.03] hover:text-black"
+                  )}
+                >
+                  <div className="flex flex-1 flex-col">
+                    <span className="leading-tight">{option.label}</span>
+                    {option.subLabel && (
+                      <span className="text-xs leading-tight text-black/40">
+                        {option.subLabel}
+                      </span>
+                    )}
+                  </div>
+                  {isActive && (
+                    <motion.span initial={{ scale: 0 }} animate={{ scale: 1 }}>
+                      <Check className="h-4 w-4 text-black/50" />
+                    </motion.span>
+                  )}
+                </motion.button>
+              );
+            })}
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </div>
+  );
 }
 
 function getValidationFlag(data: Record<string, unknown> | null) {
@@ -568,21 +661,16 @@ export function AIChat({ initialBatchId = "", mode = "full" }: AIChatProps) {
             </p>
           </div>
 
-          <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-4">
+          <div className="rounded-2xl border border-black/10 bg-black/[0.03] px-4 py-3">
             <p className="text-xs uppercase tracking-[0.24em] text-black/45">
               {isSimpleMode ? t("assistant.currentBatch") : t("assistant.currentContext")}
             </p>
-            <p className="mt-2 text-sm font-semibold text-black">
+            <p className="mt-1.5 text-sm font-semibold text-black">
               {activeBatchId
                 ? t("assistant.workingOn", { batchId: activeBatchId })
                 : isSimpleMode
                   ? t("assistant.noBatchSelected")
                   : t("assistant.noBatchPinned")}
-            </p>
-            <p className="mt-2 text-xs text-black/50">
-              {isSimpleMode
-                ? languages.find((option) => option.value === language)?.nativeLabel
-                : getReadableActionLabel(lastAction, t("assistant.waitingResponse"), t)}
             </p>
           </div>
         </div>
@@ -682,27 +770,25 @@ export function AIChat({ initialBatchId = "", mode = "full" }: AIChatProps) {
 
             <label className="space-y-2">
               <span className="text-sm font-medium text-black/80">{isSimpleMode ? t("assistant.languageAndMic") : t("assistant.language")}</span>
-              <select value={language} onChange={(event) => setLanguagePreference(event.target.value as typeof language)} className="input-shell">
-                {languages.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.nativeLabel}
-                  </option>
-                ))}
-              </select>
+              <CustomSelect
+                value={language}
+                onChange={(val) => setLanguagePreference(val as typeof language)}
+                options={languages.map((l) => ({ value: l.value, label: l.nativeLabel }))}
+              />
             </label>
 
             {!isSimpleMode ? (
               <label className="space-y-2">
                 <span className="text-sm font-medium text-black/80">{t("assistant.style")}</span>
-                <select
+                <CustomSelect
                   value={responseStyle}
-                  onChange={(event) => setResponseStyle(event.target.value as AIResponseStyle)}
-                  className="input-shell"
-                >
-                  <option value="brief">{t("assistant.brief")}</option>
-                  <option value="balanced">{t("assistant.balanced")}</option>
-                  <option value="detailed">{t("assistant.detailed")}</option>
-                </select>
+                  onChange={(val) => setResponseStyle(val as AIResponseStyle)}
+                  options={[
+                    { value: "brief", label: t("assistant.brief") },
+                    { value: "balanced", label: t("assistant.balanced") },
+                    { value: "detailed", label: t("assistant.detailed") }
+                  ]}
+                />
               </label>
             ) : null}
 
@@ -768,22 +854,7 @@ export function AIChat({ initialBatchId = "", mode = "full" }: AIChatProps) {
             </div>
           ) : null}
 
-          <div className="rounded-2xl border border-black/10 bg-black/[0.03] px-4 py-3 text-sm text-black/68">
-            {t("assistant.speechHint")}
-          </div>
 
-          <div className="flex flex-wrap gap-2">
-            {suggestedPrompts.map((prompt) => (
-              <button
-                key={prompt}
-                type="button"
-                onClick={() => applyPrompt(prompt)}
-                className="rounded-full border border-black/10 bg-black/[0.03] px-4 py-2 text-sm text-black/75 transition duration-300 hover:border-black/25 hover:bg-white hover:text-black"
-              >
-                {prompt}
-              </button>
-            ))}
-          </div>
         </form>
       </div>
 

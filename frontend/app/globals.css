@@ -16,7 +16,7 @@ body {
 }
 
 ::selection {
-  background: rgba(17, 17, 17, 0.92);
+  background: rgba(5, 150, 105, 0.92); /* finca-emerald */
   color: white;
 }
 
@@ -61,7 +61,7 @@ body {
   }
 
   .button-primary {
-    @apply inline-flex items-center justify-center rounded-full bg-black px-5 py-3 text-sm font-semibold text-white transition duration-300 hover:scale-[1.02] hover:shadow-glow;
+    @apply inline-flex items-center justify-center rounded-full bg-finca-emerald px-5 py-3 text-sm font-semibold text-white transition duration-300 hover:scale-[1.02] hover:shadow-glow-green;
   }
 
   .button-secondary {
