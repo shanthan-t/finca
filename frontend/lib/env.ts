@@ -1,7 +1,7 @@
 import type { AppLanguage } from "@/lib/i18n";
 import { createTranslator } from "@/lib/i18n";
 
-const placeholderApiUrl = "https://your-render-url.onrender.com/api/v1";
+const placeholderApiUrl = "https://agri-blockchain-engine.onrender.com/api/v1";
 
 export const env = {
   supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
