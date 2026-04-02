@@ -13,12 +13,13 @@ import { getRequestLanguage } from "@/lib/i18n-server";
 export async function generateMetadata({
   params
 }: {
-  params: { batchId: string };
+  params: Promise<{ batchId: string }>;
 }): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const { batchId } = await params;
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
-    title: `${t("addEvent.batch")} ${params.batchId}`
+    title: `${t("addEvent.batch")} ${batchId}`
   };
 }
 
@@ -26,13 +27,15 @@ export default async function BatchDetailPage({
   params,
   searchParams
 }: {
-  params: { batchId: string };
-  searchParams?: { created?: string; pending?: string };
+  params: Promise<{ batchId: string }>;
+  searchParams: Promise<{ created?: string; pending?: string }>;
 }) {
-  const language = getRequestLanguage();
+  const { batchId } = await params;
+  const sp = await searchParams;
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
-  const chain = await getBatchChain(params.batchId);
-  const showPendingState = searchParams?.created === "1" || searchParams?.pending === "1";
+  const chain = await getBatchChain(batchId);
+  const showPendingState = sp.created === "1" || sp.pending === "1";
 
   if (!chain) {
     if (showPendingState) {
@@ -44,7 +47,7 @@ export default async function BatchDetailPage({
                 <p className="section-heading-eyebrow">{t("batchDetail.pendingBadge")}</p>
                 <h1 className="text-4xl font-semibold text-black sm:text-5xl">{t("batchDetail.pendingTitle")}</h1>
                 <p className="max-w-3xl text-lg leading-8 text-black/70">
-                  {t("batchDetail.pendingDesc", { batchId: params.batchId })}
+                  {t("batchDetail.pendingDesc", { batchId: batchId })}
                 </p>
               </div>
 
@@ -60,9 +63,9 @@ export default async function BatchDetailPage({
               </div>
 
               <div className="flex flex-wrap gap-3">
-                <Link href={`/batches/${params.batchId}?created=1`} className="button-primary gap-2">
-                  {t("common.retryChain")}
-                  <ArrowRight className="h-4 w-4" />
+                <Link href={`/add-event?batchId=${batchId}`} className="button-primary h-12">
+                  {t("common.addEvent")}
+                  <ArrowRight className="size-5" />
                 </Link>
                 <Link href="/create-batch" className="button-secondary">
                   {t("common.createAnotherBatch")}

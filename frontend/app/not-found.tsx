@@ -3,8 +3,9 @@ import Link from "next/link";
 import { createTranslator } from "@/lib/i18n";
 import { getRequestLanguage } from "@/lib/i18n-server";
 
-export default function NotFound() {
-  const t = createTranslator(getRequestLanguage());
+export default async function NotFound() {
+  const language = await getRequestLanguage();
+  const t = createTranslator(language);
 
   return (
     <div className="section-shell py-20">

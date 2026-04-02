@@ -10,7 +10,7 @@ import { getRequestLanguage } from "@/lib/i18n-server";
 import { getLanguageOption, createTranslator } from "@/lib/i18n";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
     title: {
@@ -21,8 +21,8 @@ export async function generateMetadata(): Promise<Metadata> {
   };
 }
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const language = getRequestLanguage();
+export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+  const language = await getRequestLanguage();
   const activeLanguage = getLanguageOption(language);
   const fontStyle = {
     "--font-body": activeLanguage.fontFamily,

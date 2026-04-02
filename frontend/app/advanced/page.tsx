@@ -8,15 +8,15 @@ import { getRequestLanguage } from "@/lib/i18n-server";
 import { createTranslator } from "@/lib/i18n";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
     title: t("common.advancedMode")
   };
 }
 
-export default function AdvancedModePage() {
-  const language = getRequestLanguage();
+export default async function AdvancedModePage() {
+  const language = await getRequestLanguage();
   const copy = getAdvancedCopy();
   const t = createTranslator(language);
 

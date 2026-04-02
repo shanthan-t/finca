@@ -2,12 +2,16 @@ import { unstable_noStore as noStore } from "next/cache";
 
 import { createSupabaseServerClient } from "@/lib/supabase";
 import { deriveBatchFromBlocks, groupBlocksByBatch, mergeBatchSources } from "@/lib/utils";
+import { getRequestLanguage } from "@/lib/i18n-server";
+import { createTranslator } from "@/lib/i18n";
 import type { Batch, BatchSummary, BatchWithBlocks, Block } from "@/lib/types";
 
 export async function getDashboardData() {
   noStore();
 
   const supabase = createSupabaseServerClient();
+  const language = await getRequestLanguage();
+  const t = createTranslator(language);
 
   if (!supabase) {
     return [] satisfies BatchSummary[];
@@ -26,7 +30,7 @@ export async function getDashboardData() {
     throw new Error(blockError.message);
   }
 
-  const batchRows = mergeBatchSources((batches ?? []) as Batch[], (blocks ?? []) as Block[]);
+  const batchRows = mergeBatchSources((batches ?? []) as Batch[], (blocks ?? []) as Block[], t);
   const blockRows = (blocks ?? []) as Block[];
   const blocksByBatch = groupBlocksByBatch(blockRows);
 
@@ -47,6 +51,8 @@ export async function getBatchOptions() {
   noStore();
 
   const supabase = createSupabaseServerClient();
+  const language = await getRequestLanguage();
+  const t = createTranslator(language);
 
   if (!supabase) {
     return [] satisfies Batch[];
@@ -65,13 +71,15 @@ export async function getBatchOptions() {
     throw new Error(blockError.message);
   }
 
-  return mergeBatchSources((batches ?? []) as Batch[], (blocks ?? []) as Block[]);
+  return mergeBatchSources((batches ?? []) as Batch[], (blocks ?? []) as Block[], t);
 }
 
 export async function getBatchChain(batchId: string): Promise<BatchWithBlocks | null> {
   noStore();
 
   const supabase = createSupabaseServerClient();
+  const language = await getRequestLanguage();
+  const t = createTranslator(language);
 
   if (!supabase) {
     return null;
@@ -91,14 +99,14 @@ export async function getBatchChain(batchId: string): Promise<BatchWithBlocks | 
   }
 
   const blockRows = (blocks ?? []) as Block[];
-  const batchRow = (batch as Batch | null) ?? deriveBatchFromBlocks(batchId, blockRows);
+  const batchRow = (batch as Batch | null) ?? deriveBatchFromBlocks(batchId, blockRows, t);
 
   if (!batchRow && blockRows.length === 0) {
     return null;
   }
 
   return {
-    ...(batchRow ?? deriveBatchFromBlocks(batchId, blockRows)!),
+    ...batchRow!,
     blocks: blockRows
   };
 }

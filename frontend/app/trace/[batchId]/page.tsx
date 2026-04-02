@@ -7,7 +7,7 @@ import { createTranslator } from "@/lib/i18n";
 import { getRequestLanguage } from "@/lib/i18n-server";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
     title: t("trace.eyebrow")
@@ -17,9 +17,10 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function TraceBatchPage({
   params
 }: {
-  params: { batchId: string };
+  params: Promise<{ batchId: string }>;
 }) {
-  const chain = await getBatchChain(params.batchId);
+  const { batchId } = await params;
+  const chain = await getBatchChain(batchId);
 
   if (!chain) {
     notFound();

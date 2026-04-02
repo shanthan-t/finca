@@ -1,9 +1,10 @@
 import { redirect } from "next/navigation";
 
-export default function BatchAliasPage({
+export default async function BatchAliasPage({
   params
 }: {
-  params: { id: string };
+  params: Promise<{ id: string }>;
 }) {
-  redirect(`/batches/${params.id}`);
+  const { id } = await params;
+  redirect(`/batches/${id}`);
 }

@@ -2,6 +2,8 @@ import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 
 import { createSupabaseAdminClient } from "@/lib/supabase-server";
 import { deriveBatchFromBlocks, groupBlocksByBatch, mergeBatchSources } from "@/lib/utils";
+import { getRequestLanguage } from "@/lib/i18n-server";
+import { createTranslator } from "@/lib/i18n";
 import type { AIRouterHistoryRow, Batch, BatchSummary, BatchWithBlocks, Block, Database, JsonValue } from "@/lib/types";
 
 function getServerSupabase() {
@@ -133,20 +135,26 @@ export async function getBlocksByBatchIdServer(batchId: string) {
 }
 
 export async function getBatchWithBlocksServer(batchId: string): Promise<BatchWithBlocks | null> {
+  const language = await getRequestLanguage();
+  const t = createTranslator(language);
+
   const [batch, blocks] = await Promise.all([getBatchRowServer(batchId), getBlocksByBatchIdServer(batchId)]);
-  const batchRow = batch ?? deriveBatchFromBlocks(batchId, blocks);
+  const batchRow = batch ?? deriveBatchFromBlocks(batchId, blocks, t);
 
   if (!batchRow && blocks.length === 0) {
     return null;
   }
 
   return {
-    ...(batchRow ?? deriveBatchFromBlocks(batchId, blocks)!),
+    ...batchRow!,
     blocks
   };
 }
 
 export async function getDashboardSummaryServer() {
+  const language = await getRequestLanguage();
+  const t = createTranslator(language);
+
   const supabase = getServerSupabase();
   const [{ data: batches, error: batchError }, { data: blocks, error: blockError }] = await Promise.all([
     supabase.from("batches").select("*").order("crop_name", { ascending: true }),
@@ -161,7 +169,7 @@ export async function getDashboardSummaryServer() {
     throw new Error(blockError.message);
   }
 
-  const batchRows = mergeBatchSources((batches ?? []) as Batch[], (blocks ?? []) as Block[]);
+  const batchRows = mergeBatchSources((batches ?? []) as Batch[], (blocks ?? []) as Block[], t);
   const blockRows = (blocks ?? []) as Block[];
   const blocksByBatch = groupBlocksByBatch(blockRows);
 

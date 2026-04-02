@@ -8,7 +8,7 @@ import { getRequestLanguage } from "@/lib/i18n-server";
 import { createTranslator } from "@/lib/i18n";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
     title: t("dashboard.eyebrow")
@@ -16,7 +16,7 @@ export async function generateMetadata(): Promise<Metadata> {
 }
 
 export default async function DashboardPage() {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   const batches = await getDashboardData();
 

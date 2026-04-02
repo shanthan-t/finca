@@ -6,7 +6,7 @@ import { createTranslator } from "@/lib/i18n";
 import { getRequestLanguage } from "@/lib/i18n-server";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
     title: t("verify.eyebrow")

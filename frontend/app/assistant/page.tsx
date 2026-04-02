@@ -5,19 +5,20 @@ import { createTranslator } from "@/lib/i18n";
 import { getRequestLanguage } from "@/lib/i18n-server";
 
 export async function generateMetadata(): Promise<Metadata> {
-  const language = getRequestLanguage();
+  const language = await getRequestLanguage();
   const t = createTranslator(language);
   return {
     title: t("assistant.eyebrow")
   };
 }
 
-export default function AssistantPage({
+export default async function AssistantPage({
   searchParams
 }: {
-  searchParams?: { batchId?: string; batch_id?: string };
+  searchParams: Promise<{ batchId?: string; batch_id?: string }>;
 }) {
-  const initialBatchId = searchParams?.batchId ?? searchParams?.batch_id ?? "";
+  const sp = await searchParams;
+  const initialBatchId = sp.batchId ?? sp.batch_id ?? "";
 
   return (
     <div className="section-shell py-14 sm:py-16">
