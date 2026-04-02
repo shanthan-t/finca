@@ -54,16 +54,20 @@ async function ensureBatchRow(supabase: SupabaseClient<Database>, batch: Batch) 
     .maybeSingle();
 
   if (lookupError) {
+    console.error(`[DB] Failed to look up batch ${batch.batch_id}:`, lookupError);
     throw new Error(lookupError.message);
   }
 
   if (existingBatch) {
+    console.log(`[DB] Batch ${batch.batch_id} already exists.`);
     return;
   }
 
+  console.log(`[DB] Inserting new batch: ${batch.batch_id}`);
   const { error: insertError } = await supabase.from("batches").insert(batch as never);
 
   if (insertError && insertError.code !== "23505") {
+    console.error(`[DB] Failed to insert batch ${batch.batch_id}:`, insertError);
     throw new Error(formatWriteError(insertError, "batches"));
   }
 }
@@ -77,16 +81,20 @@ async function ensureBlockRow(supabase: SupabaseClient<Database>, block: Block) 
     .maybeSingle();
 
   if (lookupError) {
+    console.error(`[DB] Failed to look up block ${block.batch_id}/${block.index}:`, lookupError);
     throw new Error(lookupError.message);
   }
 
   if (existingBlock) {
+    console.log(`[DB] Block ${block.batch_id}/${block.index} already exists.`);
     return;
   }
 
+  console.log(`[DB] Inserting new block: ${block.batch_id}/${block.index}`);
   const { error: insertError } = await supabase.from("blocks").insert(block as never);
 
   if (insertError && insertError.code !== "23505") {
+    console.error(`[DB] Failed to insert block ${block.batch_id}/${block.index}:`, insertError);
     throw new Error(formatWriteError(insertError, "blocks"));
   }
 }

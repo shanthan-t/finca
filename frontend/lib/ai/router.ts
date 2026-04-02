@@ -1217,24 +1217,36 @@ export function getAIRouteSchema() {
 
 export async function runAIRouter(payload: AIQueryRequest): Promise<AIResponse> {
   const request = parseRequest(payload);
+  console.log(`[AI] Incoming request: "${request.query}" (Lang: ${request.language}, Batch: ${request.batchId})`);
 
   if (!request.query) {
+    console.warn("[AI] Empty query received.");
     throw new Error("The `query` field is required.");
   }
 
   if (request.query.length > MAX_QUERY_LENGTH) {
+    console.warn(`[AI] Query too long: ${request.query.length} chars.`);
     throw new Error("The `query` field is too long.");
   }
 
   const warnings: string[] = [];
   const historyContext = await loadHistoryContext(request.sessionId, 8);
+  console.log(`[AI] Loaded ${historyContext.items.length} turns of history.`);
 
   if (historyContext.warning) {
     warnings.push(historyContext.warning);
   }
 
   const decision = await decideIntent(request, historyContext.items);
-  const execution = await executeIntent(request, decision, historyContext.items, warnings);
+  console.log(`[AI] Intent decision: ${decision.intent} (Confidence: ${decision.confidence})`);
+
+  let execution: RouterExecutionResult;
+  try {
+    execution = await executeIntent(request, decision, historyContext.items, warnings);
+  } catch (error) {
+    console.error(`[AI] Execution failed for intent ${decision.intent}:`, error);
+    throw error;
+  }
   const uiAction =
     execution.uiAction ?? getUiAction(execution.intent, Boolean(execution.audioUrl), execution.requiresUserAction);
 

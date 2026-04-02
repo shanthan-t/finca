@@ -3,10 +3,24 @@ import { createTranslator } from "@/lib/i18n";
 
 const placeholderApiUrl = "https://agri-blockchain-engine.onrender.com/api/v1";
 
+function resolveApiUrl() {
+  const hostport = process.env.API_HOSTPORT?.trim() ?? "";
+  const configuredUrl =
+    process.env.API_URL?.trim() ?? process.env.NEXT_PUBLIC_API_URL?.trim() ?? placeholderApiUrl;
+
+  if (hostport) {
+    const prefixed = /^https?:\/\//.test(hostport) ? hostport : `http://${hostport}`;
+    const normalized = prefixed.replace(/\/+$/, "");
+    return normalized.endsWith("/api/v1") ? normalized : `${normalized}/api/v1`;
+  }
+
+  return configuredUrl.replace(/\/+$/, "");
+}
+
 export const env = {
   supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
   supabaseAnonKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "",
-  apiUrl: process.env.NEXT_PUBLIC_API_URL ?? placeholderApiUrl
+  apiUrl: resolveApiUrl()
 };
 
 export const configState = {

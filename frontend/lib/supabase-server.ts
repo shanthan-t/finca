@@ -23,9 +23,22 @@ function getSupabaseServiceRoleKey() {
 
 export function createSupabaseAdminClient() {
   const url = getSupabaseUrl();
-  const key = getSupabaseServiceRoleKey() || getSupabaseAnonKey();
+  const serviceKey = getSupabaseServiceRoleKey();
+  const anonKey = getSupabaseAnonKey();
 
-  if (!url || !key) {
+  if (!url) {
+    console.error("[Supabase] Missing NEXT_PUBLIC_SUPABASE_URL.");
+    return null;
+  }
+
+  if (!serviceKey) {
+    console.warn("[Supabase] SUPABASE_SERVICE_ROLE_KEY is missing. Falling back to anon key for admin operations (may fail due to RLS).");
+  }
+
+  const key = serviceKey || anonKey;
+
+  if (!key) {
+    console.error("[Supabase] Missing both service role key and anon key.");
     return null;
   }
 

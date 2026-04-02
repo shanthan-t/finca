@@ -1,25 +1,14 @@
-const placeholderApiUrl = "https://your-render-url.onrender.com/api/v1";
+import { env } from "@/lib/env";
 
 export function getServerApiUrl() {
-  const hostport = process.env.API_HOSTPORT?.trim() ?? "";
-  const configuredUrl = process.env.API_URL?.trim() ?? process.env.NEXT_PUBLIC_API_URL?.trim() ?? "";
-
-  if (hostport) {
-    const prefixed = /^https?:\/\//.test(hostport) ? hostport : `http://${hostport}`;
-    const normalized = prefixed.replace(/\/+$/, "");
-
-    return normalized.endsWith("/api/v1") ? normalized : `${normalized}/api/v1`;
-  }
-
-  if (!configuredUrl || configuredUrl === placeholderApiUrl) {
-    throw new Error("API_URL is missing. Configure API_URL, API_HOSTPORT, or NEXT_PUBLIC_API_URL on the server.");
-  }
-
-  return configuredUrl.replace(/\/+$/, "");
+  return env.apiUrl;
 }
 
 export async function postBlockchainJson<T>(path: string, payload: unknown): Promise<T> {
-  const upstream = await fetch(`${getServerApiUrl()}${path}`, {
+  const url = `${getServerApiUrl()}${path}`;
+  console.log(`[API] Upstream POST: ${url}`);
+
+  const upstream = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
@@ -28,7 +17,10 @@ export async function postBlockchainJson<T>(path: string, payload: unknown): Pro
     cache: "no-store"
   });
 
-  const data = (await upstream.json().catch(() => null)) as
+  const data = (await upstream.json().catch((err) => {
+    console.error(`[API] Failed to parse JSON from ${url}:`, err);
+    return null;
+  })) as
     | (T & {
         message?: string;
       })
@@ -40,10 +32,12 @@ export async function postBlockchainJson<T>(path: string, payload: unknown): Pro
         ? data.message
         : `Blockchain service request failed with status ${upstream.status}.`;
 
+    console.error(`[API] Upstream failed: ${url} (${upstream.status})`, data);
     throw new Error(message);
   }
 
   if (!data) {
+    console.error(`[API] Upstream returned no data: ${url}`);
     throw new Error("The blockchain service returned an empty response.");
   }
 
@@ -55,12 +49,16 @@ export async function forwardBlockchainPost(request: Request, path: string) {
 
   try {
     payload = await request.json();
-  } catch {
+  } catch (err) {
+    console.error(`[API] Failed to parse request JSON for ${path}:`, err);
     return Response.json({ message: "The request body must be valid JSON." }, { status: 400 });
   }
 
+  const url = `${getServerApiUrl()}${path}`;
+  console.log(`[API] Forwarding POST: ${url}`);
+
   try {
-    const upstream = await fetch(`${getServerApiUrl()}${path}`, {
+    const upstream = await fetch(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -72,6 +70,10 @@ export async function forwardBlockchainPost(request: Request, path: string) {
     const raw = await upstream.text();
     const contentType = upstream.headers.get("content-type") ?? "application/json";
 
+    if (!upstream.ok) {
+      console.error(`[API] Upstream forwarding failed: ${url} (${upstream.status})`, raw);
+    }
+
     return new Response(raw, {
       status: upstream.status,
       headers: {
@@ -79,6 +81,7 @@ export async function forwardBlockchainPost(request: Request, path: string) {
       }
     });
   } catch (error) {
+    console.error(`[API] Network error forwarding to ${url}:`, error);
     const message = error instanceof Error ? error.message : "The blockchain service could not be reached.";
 
     return Response.json(
