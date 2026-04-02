@@ -1,9 +1,10 @@
 import { AlertTriangle } from "lucide-react";
 
 import { getConfigurationIssues } from "@/lib/env";
+import type { AppLanguage } from "@/lib/i18n";
 
-export function ConfigRibbon() {
-  const issues = getConfigurationIssues();
+export function ConfigRibbon({ language }: { language: AppLanguage }) {
+  const issues = getConfigurationIssues(language);
 
   if (issues.length === 0) {
     return null;

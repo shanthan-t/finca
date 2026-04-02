@@ -3,6 +3,7 @@
 import { motion } from "framer-motion";
 import { Loader2, ShieldAlert, ShieldCheck, ShieldQuestion } from "lucide-react";
 
+import { useLanguage } from "@/components/providers/language-provider";
 import { cn } from "@/lib/utils";
 import type { ValidationResponse } from "@/lib/types";
 
@@ -12,6 +13,7 @@ interface ValidationBadgeProps {
 }
 
 export function ValidationBadge({ validation, loading = false }: ValidationBadgeProps) {
+  const { t } = useLanguage();
   if (loading) {
     return (
       <motion.div
@@ -23,8 +25,8 @@ export function ValidationBadge({ validation, loading = false }: ValidationBadge
           <Loader2 className="h-5 w-5 animate-spin" />
         </div>
         <div>
-          <p className="text-sm font-semibold text-black">Validating chain integrity</p>
-          <p className="text-xs uppercase tracking-[0.24em] text-black/45">Reviewing recorded journey</p>
+          <p className="text-sm font-semibold text-black">{t("validation.validatingTitle")}</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-black/45">{t("validation.validatingSubtitle")}</p>
         </div>
       </motion.div>
     );
@@ -37,8 +39,8 @@ export function ValidationBadge({ validation, loading = false }: ValidationBadge
           <ShieldQuestion className="h-5 w-5" />
         </div>
         <div>
-          <p className="text-sm font-semibold text-black">Awaiting validation</p>
-          <p className="text-xs uppercase tracking-[0.24em] text-black/45">Run validation to confirm integrity</p>
+          <p className="text-sm font-semibold text-black">{t("validation.awaitingTitle")}</p>
+          <p className="text-xs uppercase tracking-[0.24em] text-black/45">{t("validation.awaitingSubtitle")}</p>
         </div>
       </div>
     );
@@ -75,12 +77,12 @@ export function ValidationBadge({ validation, loading = false }: ValidationBadge
 
       <div className="space-y-1">
         <p className="text-sm font-semibold text-black">
-          {isValid ? "Chain Verified" : "Integrity Compromised"}
+          {isValid ? t("validation.verified") : t("validation.compromised")}
         </p>
         <p className="text-xs uppercase tracking-[0.24em] text-black/45">
           {isValid
-            ? "Validation pulse confirms an untampered chain"
-            : `Broken custody path${validation.invalid_index !== null && validation.invalid_index !== undefined ? ` at block ${validation.invalid_index}` : ""}`}
+            ? t("validation.verifiedDesc")
+            : `${t("validation.brokenPath")}${validation.invalid_index !== null && validation.invalid_index !== undefined ? ` ${validation.invalid_index}` : ""}`}
         </p>
         {validation.message ? <p className="text-sm text-black/65">{validation.message}</p> : null}
       </div>

@@ -13,6 +13,9 @@ export interface Batch {
   crop_name: string;
   farmer_name: string;
   farm_location: string;
+  farmer_phone?: string | null;
+  farmer_verified?: boolean | null;
+  qr_code_url?: string | null;
   created_at?: string | null;
 }
 
@@ -50,6 +53,12 @@ export interface CreateBatchPayload {
   farm_location: string;
 }
 
+export interface BatchEnhancements {
+  farmer_phone?: string | null;
+  farmer_verified?: boolean | null;
+  qr_code_url?: string | null;
+}
+
 export interface CreateBlockPayload {
   batch_id: string;
   event_type: string;
@@ -70,15 +79,21 @@ export interface ApiMutationResponse {
   [key: string]: unknown;
 }
 
+export interface AIRouterHistoryRow {
+  turn_id: number;
+  session_id: string;
+  user_query: string;
+  intent: string;
+  api_call?: JsonValue | null;
+  api_result_summary?: string | null;
+  assistant_message: string;
+  metadata?: JsonValue | null;
+  created_at?: string | null;
+}
+
 export interface Database {
   public: {
     Tables: {
-      ai_router_history: {
-        Row: AiRouterHistoryRow;
-        Insert: AiRouterHistoryInsert;
-        Update: Partial<AiRouterHistoryInsert>;
-        Relationships: [];
-      };
       batches: {
         Row: Batch;
         Insert: Batch;
@@ -91,6 +106,12 @@ export interface Database {
         Update: Partial<Block>;
         Relationships: [];
       };
+      ai_router_history: {
+        Row: AIRouterHistoryRow;
+        Insert: Omit<AIRouterHistoryRow, "turn_id"> & { turn_id?: number };
+        Update: Partial<AIRouterHistoryRow>;
+        Relationships: [];
+      };
     };
     Views: Record<string, never>;
     Functions: Record<string, never>;
@@ -99,7 +120,22 @@ export interface Database {
   };
 }
 
-export type SupportedIntent =
+export type AIApiService = "python_blockchain" | "supabase" | "tts";
+
+export interface AIApiCall {
+  endpoint: string;
+  method: string;
+  service?: AIApiService;
+  ok?: boolean;
+}
+
+export interface AIPlannedApiCall extends AIApiCall {
+  service: AIApiService;
+  payload?: Record<string, unknown>;
+}
+
+export type AIResponseStyle = "brief" | "balanced" | "detailed" | (string & {});
+export type AIIntent =
   | "create_batch"
   | "add_block"
   | "validate_chain"
@@ -112,106 +148,82 @@ export type SupportedIntent =
   | "tamper_check"
   | "unknown";
 
-export interface RouterApiCall {
-  service: "python_blockchain" | "supabase" | "tts";
-  endpoint: string;
-  method: "GET" | "POST";
-  payload: Record<string, unknown> | null;
-}
+export type KnownAssistantAction =
+  | "SHOW_BATCH_DETAILS"
+  | "SHOW_DASHBOARD"
+  | "SHOW_VERIFICATION_RESULT"
+  | "SHOW_ERROR"
+  | "PLAY_AUDIO";
 
-export interface HistoryContextItem {
+export type AssistantUIAction = KnownAssistantAction | (string & {});
+
+export interface AIHistoryEntry {
   turn_id: number;
   type: string;
   summary: string;
-  batch_id?: string | null;
-  event_type?: string | null;
-  hash?: string | null;
+  user_query?: string;
+  batch_id: string | null;
+  event_type: string | null;
+  hash: string | null;
 }
 
-export interface RouterPlan {
-  intent: SupportedIntent;
-  confidence: number;
-  requires_api_call: boolean;
-  api_calls: RouterApiCall[];
-  history_context_used: HistoryContextItem[];
-  response_style: "brief" | "detailed";
-  tts_required: boolean;
-  follow_up_needed: boolean;
-  follow_up_question: string | null;
+export interface AIRouterPlan {
+  intent: AIIntent | string;
+  confidence?: number;
+  requires_api_call?: boolean;
+  api_calls?: AIPlannedApiCall[];
+  history_context_used?: AIHistoryEntry[];
+  response_style?: AIResponseStyle;
+  tts_required?: boolean;
+  follow_up_needed?: boolean;
+  follow_up_question?: string | null;
+  [key: string]: unknown;
 }
 
-export interface AiTurnRequest {
+export interface AIQueryContext {
+  batch_id?: string;
+  crop_name?: string;
+  farmer_name?: string;
+  farm_location?: string;
+  event_type?: string;
+  data?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface AIResponse {
+  assistant_message: string;
+  intent: AIIntent | string;
+  ui_action?: AssistantUIAction | null;
+  data: Record<string, unknown>;
+  confidence?: number;
+  router_plan?: AIRouterPlan | null;
+  api_calls_made?: AIApiCall[];
+  history_used?: AIHistoryEntry[];
+  execution_results?: Record<string, unknown>;
+  audio_url?: string | null;
+  requires_user_action?: boolean;
+  follow_up_question?: string | null;
+  session_id?: string;
+  turn_id?: number;
+  router_version?: string;
+  warnings?: string[];
+}
+
+export interface AIQueryRequest {
   query: string;
+  batch_id?: string;
+  session_id?: string;
   language?: string;
   voice_mode?: boolean;
-  session_id?: string;
-  batch_id?: string;
-  response_style?: "brief" | "detailed";
-  context?: {
-    batch_id?: string;
-    crop_name?: string;
-    farmer_name?: string;
-    farm_location?: string;
-    event_type?: string;
-    data?: BlockData;
-  };
+  response_style?: AIResponseStyle;
+  context?: AIQueryContext;
 }
 
-export interface AiRouterHistoryEntry {
-  turn_id: number;
-  timestamp: string;
-  user_query: string;
-  intent: SupportedIntent;
-  api_call: RouterApiCall | null;
-  api_result_summary: Record<string, unknown> | null;
-  assistant_message?: string | null;
-  metadata?: Record<string, unknown>;
-}
-
-export interface AiResponseEnvelope {
-  assistant_message: string;
-  intent: SupportedIntent;
-  confidence: number;
-  router_plan: RouterPlan;
-  api_calls_made: Array<{
-    endpoint: string;
-    method: "GET" | "POST";
-    service: "python_blockchain" | "supabase" | "tts";
-    ok: boolean;
-  }>;
-  history_used: HistoryContextItem[];
-  execution_results: Record<string, unknown>;
-  audio_url: string | null;
-  requires_user_action: boolean;
-  follow_up_question: string | null;
-  session_id: string;
-  turn_id: number;
-  router_version: string;
-  warnings: string[];
-}
-
-export interface AiRouterHistoryRow {
+export interface AIChatMessage {
   id: string;
-  turn_id: number;
-  session_id: string;
-  user_query: string;
-  intent: SupportedIntent;
-  api_call: RouterApiCall | null;
-  api_result_summary: Record<string, unknown> | null;
-  assistant_message: string | null;
-  metadata: Record<string, unknown>;
-  created_at: string;
-}
-
-export interface AiRouterHistoryInsert {
-  id?: string;
-  turn_id: number;
-  session_id: string;
-  user_query: string;
-  intent: SupportedIntent;
-  api_call?: RouterApiCall | null;
-  api_result_summary?: Record<string, unknown> | null;
-  assistant_message?: string | null;
-  metadata?: Record<string, unknown>;
-  created_at?: string;
+  role: "user" | "assistant";
+  content: string;
+  response?: AIResponse;
+  audioUrl?: string | null;
+  autoplayAudio?: boolean;
 }

@@ -1,10 +1,16 @@
 import type { Metadata } from "next";
 
 import { CreateBatchForm } from "@/components/forms/create-batch-form";
+import { createTranslator } from "@/lib/i18n";
+import { getRequestLanguage } from "@/lib/i18n-server";
 
-export const metadata: Metadata = {
-  title: "Create Batch"
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const language = getRequestLanguage();
+  const t = createTranslator(language);
+  return {
+    title: t("createBatch.eyebrow")
+  };
+}
 
 export default function CreateBatchPage() {
   return (

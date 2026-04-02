@@ -1,7 +1,7 @@
 import type { PostgrestError, SupabaseClient } from "@supabase/supabase-js";
 
 import { getSupabaseBrowserClient } from "@/lib/supabase";
-import type { Batch, Block, Database } from "@/lib/types";
+import type { Batch, BatchEnhancements, Block, Database } from "@/lib/types";
 
 function getSupabaseForWrites() {
   const supabase = getSupabaseBrowserClient();
@@ -81,4 +81,21 @@ export async function persistBlock(block: Block) {
   const supabase = getSupabaseForWrites();
 
   await ensureBlockRow(supabase, block);
+}
+
+export async function persistBatchEnhancements(batchId: string, enhancements: BatchEnhancements) {
+  const supabase = getSupabaseForWrites();
+  const payload = Object.fromEntries(
+    Object.entries(enhancements).filter(([, value]) => value !== undefined)
+  ) as BatchEnhancements;
+
+  if (Object.keys(payload).length === 0) {
+    return;
+  }
+
+  const { error } = await supabase.from("batches").update(payload as never).eq("batch_id", batchId);
+
+  if (error) {
+    throw new Error(formatWriteError(error, "batches"));
+  }
 }

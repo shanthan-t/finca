@@ -4,27 +4,32 @@ import { useEffect, useState, useTransition } from "react";
 import { Link2, ShieldCheck, ShieldOff } from "lucide-react";
 
 import { ChainExplorer } from "@/components/chain/chain-explorer";
+import { useLanguage } from "@/components/providers/language-provider";
 import { ValidationBadge } from "@/components/chain/validation-badge";
 import { EmptyState } from "@/components/state/empty-state";
 import { validateChain } from "@/lib/api";
 import { configState } from "@/lib/env";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
-import { formatDateTime, toTitleCase } from "@/lib/utils";
+import { formatDateTime } from "@/lib/utils";
 import type { Batch, Block, ValidationResponse } from "@/lib/types";
 
 interface VerifyWorkspaceProps {
   batches: Batch[];
+  mode?: "full" | "simple";
 }
 
-export function VerifyWorkspace({ batches }: VerifyWorkspaceProps) {
+export function VerifyWorkspace({ batches, mode = "full" }: VerifyWorkspaceProps) {
+  const { t, language } = useLanguage();
   const [selectedBatchId, setSelectedBatchId] = useState(batches[0]?.batch_id ?? "");
   const [blocks, setBlocks] = useState<Block[]>([]);
   const [validation, setValidation] = useState<ValidationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isLoadingChain, setIsLoadingChain] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const isSimpleMode = mode === "simple";
 
   const selectedBatch = batches.find((batch) => batch.batch_id === selectedBatchId) ?? null;
+  const getEventLabel = (eventType: string) => t(`events.${eventType}`);
 
   useEffect(() => {
     let active = true;
@@ -82,22 +87,22 @@ export function VerifyWorkspace({ batches }: VerifyWorkspaceProps) {
   if (batches.length === 0) {
     return (
       <EmptyState
-        title="There are no stored batches to validate yet."
-        description="Create a batch first, then return here to confirm that its journey still holds together."
+        title={t("verify.noBatchesTitle")}
+        description={t("verify.noBatchesDesc")}
         actionHref="/create-batch"
-        actionLabel="Create a batch"
+        actionLabel={t("common.createBatch")}
       />
     );
   }
 
   const runValidation = () => {
     if (!selectedBatchId) {
-      setError("Select a batch before validating.");
+      setError(t("verify.selectBatchError"));
       return;
     }
 
     if (blocks.length === 0) {
-      setError("This batch has no blocks to validate.");
+      setError(t("verify.noBlocksError"));
       return;
     }
 
@@ -108,25 +113,29 @@ export function VerifyWorkspace({ batches }: VerifyWorkspaceProps) {
         const response = await validateChain({ blocks });
         setValidation(response);
       } catch (validationError) {
-        setError(validationError instanceof Error ? validationError.message : "Validation failed.");
+        setError(validationError instanceof Error ? validationError.message : t("verify.validationFailed"));
       }
     });
   };
 
   return (
     <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-[0.9fr_1.1fr]">
+      <div className={isSimpleMode ? "" : "grid gap-6 xl:grid-cols-[0.9fr_1.1fr]"}>
         <div className="glass-panel space-y-6 p-6 lg:p-8">
-          <div className="space-y-3">
-            <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">Verify integrity</p>
-            <h2 className="text-3xl font-semibold text-black">Prove that the chain stayed untouched.</h2>
-            <p className="text-sm leading-7 text-black/68">
-              Run a trust check on the full journey and see instantly whether the chain is still intact.
-            </p>
+        <div className="space-y-3">
+            <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">{t("verify.eyebrow")}</p>
+            <h2 className="text-3xl font-semibold text-black">
+              {isSimpleMode ? t("verify.titleSimple") : t("verify.titleFull")}
+            </h2>
+            {!isSimpleMode ? (
+              <p className="text-sm leading-7 text-black/68">
+                {t("verify.description")}
+              </p>
+            ) : null}
           </div>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Batch</span>
+            <span className="text-sm font-medium text-black/80">{t("verify.batch")}</span>
             <select
               value={selectedBatchId}
               onChange={(event) => setSelectedBatchId(event.target.value)}
@@ -140,21 +149,21 @@ export function VerifyWorkspace({ batches }: VerifyWorkspaceProps) {
             </select>
           </label>
 
-          <div className="grid gap-4 sm:grid-cols-2">
+          <div className={isSimpleMode ? "grid gap-3 sm:grid-cols-2" : "grid gap-4 sm:grid-cols-2"}>
             <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <p className="text-xs uppercase tracking-[0.24em] text-black/45">Loaded blocks</p>
+              <p className="text-xs uppercase tracking-[0.24em] text-black/45">{t("verify.loadedBlocks")}</p>
               <p className="mt-2 text-3xl font-semibold text-black">{blocks.length}</p>
               <p className="mt-2 text-sm text-black/65">
-                {isLoadingChain ? "Refreshing the latest journey..." : "Ready for integrity review."}
+                {isLoadingChain ? t("verify.refreshing") : t("verify.readyReview")}
               </p>
             </div>
             <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <p className="text-xs uppercase tracking-[0.24em] text-black/45">Latest event</p>
+              <p className="text-xs uppercase tracking-[0.24em] text-black/45">{t("verify.latestEvent")}</p>
               <p className="mt-2 text-lg font-semibold text-black">
-                {blocks.at(-1) ? toTitleCase(blocks.at(-1)?.event_type ?? "") : "No blocks"}
+                {blocks.at(-1) ? getEventLabel(blocks.at(-1)?.event_type ?? "") : t("addEvent.noBlocksFound")}
               </p>
               <p className="mt-2 text-sm text-black/65">
-                {blocks.at(-1)?.timestamp ? formatDateTime(blocks.at(-1)?.timestamp) : "Waiting for chain data"}
+                {blocks.at(-1)?.timestamp ? formatDateTime(blocks.at(-1)?.timestamp, language, t) : t("verify.waitingChainData")}
               </p>
             </div>
           </div>
@@ -165,13 +174,13 @@ export function VerifyWorkspace({ batches }: VerifyWorkspaceProps) {
             disabled={isPending || isLoadingChain || !configState.hasApi || !configState.hasSupabase}
             className="button-primary w-full justify-center gap-2 disabled:cursor-not-allowed disabled:opacity-60"
           >
-            {isPending ? "Running validation..." : "Validate chain"}
+            {isPending ? t("verify.validating") : t("verify.validate")}
             <Link2 className="h-4 w-4" />
           </button>
 
           {(!configState.hasApi || !configState.hasSupabase) ? (
             <div className="rounded-2xl border border-finca-gold/25 bg-finca-gold/10 p-4 text-sm text-finca-gold">
-              Verification needs the required project settings before it can run.
+              {t("verify.warningSettings")}
             </div>
           ) : null}
 
@@ -182,33 +191,33 @@ export function VerifyWorkspace({ batches }: VerifyWorkspaceProps) {
           ) : null}
         </div>
 
-        <div className="space-y-6">
-          <ValidationBadge validation={validation} loading={isPending} />
+        {!isSimpleMode ? (
+          <div className="space-y-6">
+            <ValidationBadge validation={validation} loading={isPending} />
 
-          <div className="glass-panel grid gap-4 p-6 sm:grid-cols-2 lg:p-8">
-            <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <div className="mb-3 flex items-center gap-2 text-black/80">
-                <ShieldCheck className="h-4 w-4 text-finca-emerald" />
-                Valid chains
+            <div className="glass-panel grid gap-4 p-6 sm:grid-cols-2 lg:p-8">
+              <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <div className="mb-3 flex items-center gap-2 text-black/80">
+                  <ShieldCheck className="h-4 w-4 text-finca-emerald" />
+                  {t("verify.validChains")}
+                </div>
+                <p className="text-sm leading-7 text-black/68">{t("verify.validChainsDesc")}</p>
               </div>
-              <p className="text-sm leading-7 text-black/68">
-                Green glow and pulse animation make trust visible the moment integrity is confirmed.
-              </p>
-            </div>
-            <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <div className="mb-3 flex items-center gap-2 text-black/80">
-                <ShieldOff className="h-4 w-4 text-finca-ember" />
-                Tampered chains
+              <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <div className="mb-3 flex items-center gap-2 text-black/80">
+                  <ShieldOff className="h-4 w-4 text-finca-ember" />
+                  {t("verify.tamperedChains")}
+                </div>
+                <p className="text-sm leading-7 text-black/68">{t("verify.tamperedChainsDesc")}</p>
               </div>
-              <p className="text-sm leading-7 text-black/68">
-                Broken connectors and red alerts appear automatically when the journey no longer holds together.
-              </p>
             </div>
           </div>
-        </div>
+        ) : null}
       </div>
 
-      {selectedBatch ? (
+      {isSimpleMode ? <ValidationBadge validation={validation} loading={isPending} /> : null}
+
+      {!isSimpleMode && selectedBatch ? (
         <ChainExplorer batch={selectedBatch} blocks={blocks} validation={validation} />
       ) : null}
     </div>

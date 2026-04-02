@@ -1,5 +1,8 @@
-import { extractReturnedBlock, normalizeValidationResponse } from "@/lib/blockchain-response";
 import { configState } from "@/lib/env";
+import {
+  normalizeTimestampForValidation,
+  normalizeValidationResponse
+} from "@/lib/blockchain-response";
 import type {
   ApiMutationResponse,
   CreateBatchPayload,
@@ -7,6 +10,8 @@ import type {
   ValidatePayload,
   ValidationResponse
 } from "@/lib/types";
+
+export { extractReturnedBlock } from "@/lib/blockchain-response";
 
 const appApiBase = "/api/v1";
 
@@ -82,9 +87,3 @@ export async function validateChain(payload: ValidatePayload): Promise<Validatio
 
   return normalizeValidationResponse(response);
 }
-
-function normalizeTimestampForValidation(timestamp: string) {
-  return timestamp.replace(/([+-]00(?::?00)?)$/, "Z");
-}
-
-export { extractReturnedBlock };

@@ -12,6 +12,14 @@ const clientOptions = {
 
 let browserClient: SupabaseClient<Database> | null = null;
 
+export function createSupabaseServerClient() {
+  if (!configState.hasSupabase) {
+    return null;
+  }
+
+  return createClient<Database>(env.supabaseUrl, env.supabaseAnonKey, clientOptions);
+}
+
 export function getSupabaseBrowserClient() {
   if (!configState.hasSupabase) {
     return null;

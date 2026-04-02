@@ -4,12 +4,20 @@ import Link from "next/link";
 
 import { BatchGrid } from "@/components/dashboard/batch-grid";
 import { getDashboardData } from "@/lib/data";
+import { getRequestLanguage } from "@/lib/i18n-server";
+import { createTranslator } from "@/lib/i18n";
 
-export const metadata: Metadata = {
-  title: "Dashboard"
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const language = getRequestLanguage();
+  const t = createTranslator(language);
+  return {
+    title: t("dashboard.eyebrow")
+  };
+}
 
 export default async function DashboardPage() {
+  const language = getRequestLanguage();
+  const t = createTranslator(language);
   const batches = await getDashboardData();
 
   return (
@@ -18,15 +26,13 @@ export default async function DashboardPage() {
         <div className="glass-stage p-5 sm:p-8">
           <div className="flex flex-wrap items-end justify-between gap-6">
             <div className="space-y-3">
-              <p className="section-heading-eyebrow">Dashboard</p>
-              <h1 className="text-4xl font-semibold text-black sm:text-5xl">Live batch chains</h1>
-              <p className="max-w-3xl text-lg leading-8 text-black/70">
-                Browse every agricultural batch, resume the journey instantly, and validate trust when needed.
-              </p>
+              <p className="section-heading-eyebrow">{t("dashboard.eyebrow")}</p>
+              <h1 className="text-4xl font-semibold text-black sm:text-5xl">{t("dashboard.title")}</h1>
+              <p className="max-w-3xl text-lg leading-8 text-black/70">{t("dashboard.description")}</p>
             </div>
 
             <Link href="/create-batch" className="button-primary gap-2">
-              New batch
+              {t("dashboard.newBatch")}
               <ArrowRight className="h-4 w-4" />
             </Link>
           </div>
@@ -35,14 +41,14 @@ export default async function DashboardPage() {
             <div className="glass-panel p-5">
               <div className="mb-3 flex items-center gap-2 text-black/80">
                 <Blocks className="h-4 w-4 text-finca-mint" />
-                Stored batches
+                {t("dashboard.storedBatches")}
               </div>
               <p className="text-3xl font-semibold text-black">{batches.length}</p>
             </div>
             <div className="glass-panel p-5">
               <div className="mb-3 flex items-center gap-2 text-black/80">
                 <Activity className="h-4 w-4 text-finca-gold" />
-                Chain activity
+                {t("dashboard.chainActivity")}
               </div>
               <p className="text-3xl font-semibold text-black">
                 {batches.reduce((total, batch) => total + batch.block_count, 0)}
@@ -51,9 +57,9 @@ export default async function DashboardPage() {
             <div className="glass-panel p-5">
               <div className="mb-3 flex items-center gap-2 text-black/80">
                 <ShieldCheck className="h-4 w-4 text-finca-emerald" />
-                Verification ready
+                {t("dashboard.verificationReady")}
               </div>
-              <p className="text-3xl font-semibold text-black">Dual-view explorer</p>
+              <p className="text-3xl font-semibold text-black">{t("dashboard.dualViewExplorer")}</p>
             </div>
           </div>
         </div>

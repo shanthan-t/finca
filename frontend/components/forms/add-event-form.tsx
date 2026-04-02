@@ -4,11 +4,12 @@ import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRight, CirclePlus, Link2, Loader2, MapPin, PackageCheck, ScanSearch, Trash2 } from "lucide-react";
 
+import { useLanguage } from "@/components/providers/language-provider";
 import { createBlock, extractReturnedBlock } from "@/lib/api";
 import { configState } from "@/lib/env";
 import { persistBlock } from "@/lib/persistence";
 import { getSupabaseBrowserClient } from "@/lib/supabase";
-import { formatDateTime, shortHash, toTitleCase } from "@/lib/utils";
+import { formatDateTime, shortHash } from "@/lib/utils";
 import type { Batch, Block, BlockData } from "@/lib/types";
 
 const eventOptions = [
@@ -23,16 +24,16 @@ const eventOptions = [
 ];
 
 const metadataOptions = [
-  { key: "vehicle_id", label: "Vehicle ID", placeholder: "TRUCK-18" },
-  { key: "humidity", label: "Humidity", placeholder: "48%" },
-  { key: "condition", label: "Condition", placeholder: "Sealed and dry" },
-  { key: "warehouse", label: "Warehouse", placeholder: "Antwerp cold hub" },
-  { key: "destination", label: "Destination", placeholder: "Rotterdam retail DC" },
-  { key: "carrier", label: "Carrier", placeholder: "GreenRoute Logistics" },
-  { key: "container_id", label: "Container ID", placeholder: "CONT-2049" },
-  { key: "market", label: "Market", placeholder: "Brussels retail network" },
-  { key: "certification", label: "Certification", placeholder: "Organic lot verified" },
-  { key: "lot_size", label: "Lot size", placeholder: "320 kg" }
+  { key: "vehicle_id" },
+  { key: "humidity" },
+  { key: "condition" },
+  { key: "warehouse" },
+  { key: "destination" },
+  { key: "carrier" },
+  { key: "container_id" },
+  { key: "market" },
+  { key: "certification" },
+  { key: "lot_size" }
 ] as const;
 
 const suggestedMetadataByEvent: Record<string, Array<(typeof metadataOptions)[number]["key"]>> = {
@@ -67,9 +68,11 @@ function getMetadataOption(key: string) {
 interface AddEventFormProps {
   batches: Batch[];
   initialBatchId?: string;
+  mode?: "full" | "simple";
 }
 
-export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
+export function AddEventForm({ batches, initialBatchId, mode = "full" }: AddEventFormProps) {
+  const { t, language } = useLanguage();
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [status, setStatus] = useState<{ tone: "success" | "error"; message: string } | null>(null);
@@ -93,6 +96,7 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
     temperature: ""
   });
   const [metadataEntries, setMetadataEntries] = useState<MetadataEntry[]>([]);
+  const isSimpleMode = mode === "simple";
 
   useEffect(() => {
     let active = true;
@@ -154,6 +158,8 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
 
   const selectedMetadataKeys = metadataEntries.map((entry) => entry.key).filter(Boolean);
   const suggestedMetadataKeys = suggestedMetadataByEvent[form.event_type] ?? [];
+  const getEventLabel = (eventType: string) => t(`events.${eventType}`);
+  const getMetadataLabel = (key: string) => t(`metadata.${key}`);
 
   const addMetadataEntry = (preferredKey?: string) => {
     const nextKey =
@@ -181,13 +187,13 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
     startTransition(async () => {
       try {
         if (!selectedBatchId) {
-          throw new Error("Choose a batch before adding an event.");
+          throw new Error(t("addEvent.chooseBatchError"));
         }
 
         const supabase = getSupabaseBrowserClient();
 
         if (!supabase) {
-          throw new Error("Public data access is missing. Add your public project keys to continue.");
+          throw new Error(t("addEvent.publicAccessError"));
         }
 
         const { data: lastBlockData, error } = await supabase
@@ -205,13 +211,13 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
         }
 
         if (!lastBlock) {
-          throw new Error("No genesis block was found for this batch.");
+          throw new Error(t("addEvent.noGenesisError"));
         }
 
         const incompleteEntry = metadataEntries.find((entry) => !entry.key || !entry.value.trim());
 
         if (incompleteEntry) {
-          throw new Error("Complete or remove each optional detail before appending the block.");
+          throw new Error(t("addEvent.completeOptionalError"));
         }
 
         const duplicateEntry = metadataEntries.find(
@@ -219,8 +225,10 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
         );
 
         if (duplicateEntry) {
-          const duplicateLabel = getMetadataOption(duplicateEntry.key)?.label ?? "Optional detail";
-          throw new Error(`${duplicateLabel} was added more than once. Keep each optional detail unique.`);
+          const duplicateLabel = getMetadataOption(duplicateEntry.key)
+            ? getMetadataLabel(duplicateEntry.key)
+            : t("addEvent.duplicateOptionalDefault");
+          throw new Error(t("addEvent.duplicateOptionalError", { label: duplicateLabel }));
         }
 
         const optionalMetadata = metadataEntries.reduce<BlockData>((accumulator, entry) => {
@@ -253,43 +261,68 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
         const returnedBlock = extractReturnedBlock(response, selectedBatchId);
 
         if (!returnedBlock) {
-          throw new Error("The trust engine did not return a usable block to store.");
+          throw new Error(t("addEvent.unusableBlockError"));
         }
 
         await persistBlock(returnedBlock);
 
-        setStatus({ tone: "success", message: "New supply chain block created successfully." });
+        setStatus({ tone: "success", message: t("addEvent.successStored") });
         router.push(`/batches/${selectedBatchId}`);
         router.refresh();
       } catch (error) {
         setStatus({
           tone: "error",
-          message: error instanceof Error ? error.message : "Unable to create the next block."
+          message: error instanceof Error ? error.message : t("addEvent.unable")
         });
       }
     });
   };
 
   return (
-    <div className="grid gap-6 xl:grid-cols-[1.08fr_0.92fr]">
+    <div className={isSimpleMode ? "" : "grid gap-6 xl:grid-cols-[1.08fr_0.92fr]"}>
       <form onSubmit={handleSubmit} className="glass-panel space-y-6 p-6 lg:p-8">
         <div className="space-y-3">
-          <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">Add event</p>
-          <h2 className="text-3xl font-semibold text-black">Append the next verified custody event.</h2>
-          <p className="max-w-2xl text-sm leading-7 text-black/68">
-            Add the next real-world handoff so the batch story stays complete, trustworthy, and easy to follow.
-          </p>
+          <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">{t("addEvent.eyebrow")}</p>
+          <h2 className="text-3xl font-semibold text-black">
+            {isSimpleMode ? t("addEvent.titleSimple") : t("addEvent.titleFull")}
+          </h2>
+          {!isSimpleMode ? (
+            <p className="max-w-2xl text-sm leading-7 text-black/68">
+              {t("addEvent.description")}
+            </p>
+          ) : null}
         </div>
+
+        {isSimpleMode ? (
+          <div className="grid gap-3 sm:grid-cols-3">
+            <div className="rounded-[20px] border border-black/10 bg-black/[0.03] p-4">
+              <p className="text-xs uppercase tracking-[0.22em] text-black/45">{t("addEvent.chainHeight")}</p>
+              <p className="mt-2 text-2xl font-semibold text-black">{chainPreview.count}</p>
+            </div>
+            <div className="rounded-[20px] border border-black/10 bg-black/[0.03] p-4">
+              <p className="text-xs uppercase tracking-[0.22em] text-black/45">{t("addEvent.latestEvent")}</p>
+              <p className="mt-2 text-sm font-semibold text-black">
+                {chainPreview.lastBlock ? getEventLabel(chainPreview.lastBlock.event_type) : t("addEvent.noBlocksFound")}
+              </p>
+            </div>
+            <div className="rounded-[20px] border border-black/10 bg-black/[0.03] p-4">
+              <p className="text-xs uppercase tracking-[0.22em] text-black/45">{t("addEvent.lastHash")}</p>
+              <p className="mt-2 font-mono text-xs text-black/75">
+                {chainPreview.lastBlock ? shortHash(chainPreview.lastBlock.hash, 16, t) : t("common.waiting")}
+              </p>
+            </div>
+          </div>
+        ) : null}
 
         <div className="grid gap-5 md:grid-cols-2">
           <label className="space-y-2 md:col-span-2">
-            <span className="text-sm font-medium text-black/80">Batch</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.batch")}</span>
             <select
               value={selectedBatchId}
               onChange={(event) => setSelectedBatchId(event.target.value)}
               className="input-shell"
             >
-              <option value="">Select a batch</option>
+              <option value="">{t("addEvent.selectBatch")}</option>
               {batches.map((batch) => (
                 <option key={batch.batch_id} value={batch.batch_id}>
                   {batch.batch_id} · {batch.crop_name}
@@ -299,7 +332,7 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
           </label>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Event type</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.eventType")}</span>
             <select
               value={form.event_type}
               onChange={(event) => handleInputChange("event_type", event.target.value)}
@@ -307,78 +340,78 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
             >
               {eventOptions.map((option) => (
                 <option key={option} value={option}>
-                  {toTitleCase(option)}
+                  {getEventLabel(option)}
                 </option>
               ))}
             </select>
           </label>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Actor</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.actor")}</span>
             <input
               value={form.actor}
               onChange={(event) => handleInputChange("actor", event.target.value)}
               className="input-shell"
-              placeholder="Warehouse operator"
+              placeholder={t("addEvent.actorPlaceholder")}
             />
           </label>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Location</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.location")}</span>
             <input
               value={form.location}
               onChange={(event) => handleInputChange("location", event.target.value)}
               className="input-shell"
-              placeholder="Antwerp distribution hub"
+              placeholder={t("addEvent.locationPlaceholder")}
             />
           </label>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Status</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.status")}</span>
             <input
               value={form.status}
               onChange={(event) => handleInputChange("status", event.target.value)}
               className="input-shell"
-              placeholder="Quality passed"
+              placeholder={t("addEvent.statusPlaceholder")}
             />
           </label>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Shipment ID</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.shipmentId")}</span>
             <input
               value={form.shipment_id}
               onChange={(event) => handleInputChange("shipment_id", event.target.value)}
               className="input-shell"
-              placeholder="SHIP-AR-2049"
+              placeholder={t("addEvent.shipmentIdPlaceholder")}
             />
           </label>
 
           <label className="space-y-2">
-            <span className="text-sm font-medium text-black/80">Temperature</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.temperature")}</span>
             <input
               value={form.temperature}
               onChange={(event) => handleInputChange("temperature", event.target.value)}
               className="input-shell"
-              placeholder="6°C"
+              placeholder={t("addEvent.temperaturePlaceholder")}
             />
           </label>
 
           <label className="space-y-2 md:col-span-2">
-            <span className="text-sm font-medium text-black/80">Narrative note</span>
+            <span className="text-sm font-medium text-black/80">{t("addEvent.note")}</span>
             <textarea
               value={form.note}
               onChange={(event) => handleInputChange("note", event.target.value)}
               className="input-shell min-h-[120px] resize-y"
-              placeholder="Packaging sealed, pallet tagged, and released for cold-chain transit."
+              placeholder={t("addEvent.notePlaceholder")}
             />
           </label>
 
           <div className="space-y-4 md:col-span-2">
             <div className="space-y-2">
-              <span className="text-sm font-medium text-black/80">Optional details</span>
-              <p className="text-sm leading-7 text-black/60">
-                Add structured extra context through simple options instead of typing JSON.
-              </p>
+              <span className="text-sm font-medium text-black/80">{t("addEvent.optionalDetails")}</span>
+              {!isSimpleMode ? (
+                <p className="text-sm leading-7 text-black/60">{t("addEvent.optionalDetailsDesc")}</p>
+              ) : null}
             </div>
 
             <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-4 sm:p-5">
@@ -400,7 +433,7 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
                         className="inline-flex items-center gap-2 rounded-full border border-black/10 bg-white px-3 py-2 text-xs font-medium uppercase tracking-[0.2em] text-black transition duration-300 hover:border-black/25 hover:bg-black/[0.03]"
                       >
                         <CirclePlus className="h-3.5 w-3.5" />
-                        {option.label}
+                        {getMetadataLabel(option.key)}
                       </button>
                     );
                   })}
@@ -421,10 +454,10 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
                           onChange={(event) => updateMetadataEntry(entry.id, "key", event.target.value)}
                           className="input-shell"
                         >
-                          <option value="">Select detail</option>
+                          <option value="">{t("addEvent.selectDetail")}</option>
                           {availableOptions.map((option) => (
                             <option key={option.key} value={option.key}>
-                              {option.label}
+                              {getMetadataLabel(option.key)}
                             </option>
                           ))}
                         </select>
@@ -433,14 +466,14 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
                           value={entry.value}
                           onChange={(event) => updateMetadataEntry(entry.id, "value", event.target.value)}
                           className="input-shell"
-                          placeholder={selectedOption?.placeholder ?? "Enter detail"}
+                          placeholder={selectedOption ? getMetadataLabel(selectedOption.key) : t("addEvent.enterDetail")}
                         />
 
                         <button
                           type="button"
                           onClick={() => removeMetadataEntry(entry.id)}
                           className="inline-flex items-center justify-center rounded-2xl border border-black/10 bg-white px-4 py-3 text-black transition duration-300 hover:border-black/25 hover:bg-black/[0.03]"
-                          aria-label="Remove optional detail"
+                          aria-label={t("addEvent.removeOptionalDetail")}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -450,7 +483,7 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
                 </div>
               ) : (
                 <div className="mt-4 rounded-[20px] border border-dashed border-black/10 bg-white/70 p-4 text-sm leading-7 text-black/55">
-                  No optional details selected yet. Add shipping, storage, quality, or retail context when it helps tell the journey.
+                  {t("addEvent.noOptionalDetails")}
                 </div>
               )}
 
@@ -461,7 +494,7 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
                   className="button-secondary gap-2"
                 >
                   <CirclePlus className="h-4 w-4" />
-                  Add optional detail
+                  {t("addEvent.addOptionalDetail")}
                 </button>
               </div>
             </div>
@@ -482,7 +515,7 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
 
         {(!configState.hasApi || !configState.hasSupabase) ? (
           <div className="rounded-2xl border border-finca-gold/25 bg-finca-gold/10 p-4 text-sm text-finca-gold">
-            Add the required project settings before appending live journey updates.
+            {t("addEvent.warningSettings")}
           </div>
         ) : null}
 
@@ -491,81 +524,79 @@ export function AddEventForm({ batches, initialBatchId }: AddEventFormProps) {
           disabled={isPending || !configState.hasApi || !configState.hasSupabase}
           className="button-primary gap-2 disabled:cursor-not-allowed disabled:opacity-60"
         >
-          {isPending ? "Creating block..." : "Append block"}
+          {isPending ? t("addEvent.appending") : t("addEvent.append")}
           <ArrowRight className="h-4 w-4" />
         </button>
       </form>
 
-      <div className="space-y-6">
-        <div className="glass-panel p-6 lg:p-8">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">Current chain</p>
-              <h3 className="mt-3 text-2xl font-semibold text-black">
-                {selectedBatchId || "Choose a batch"}
-              </h3>
+      {!isSimpleMode ? (
+        <div className="space-y-6">
+          <div className="glass-panel p-6 lg:p-8">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">{t("addEvent.currentChain")}</p>
+                <h3 className="mt-3 text-2xl font-semibold text-black">
+                  {selectedBatchId || t("addEvent.selectBatch")}
+                </h3>
+              </div>
+              {chainPreview.loading ? (
+                <Loader2 className="h-5 w-5 animate-spin text-finca-mint" />
+              ) : (
+                <PackageCheck className="h-5 w-5 text-finca-mint" />
+              )}
             </div>
-            {chainPreview.loading ? (
-              <Loader2 className="h-5 w-5 animate-spin text-finca-mint" />
-            ) : (
-              <PackageCheck className="h-5 w-5 text-finca-mint" />
-            )}
+
+            <div className="mt-6 grid gap-4 sm:grid-cols-2">
+              <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <p className="text-xs uppercase tracking-[0.24em] text-black/45">{t("addEvent.chainHeight")}</p>
+                <p className="mt-2 text-3xl font-semibold text-black">{chainPreview.count}</p>
+                <p className="mt-2 text-sm text-black/65">{t("addEvent.description")}</p>
+              </div>
+              <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <p className="text-xs uppercase tracking-[0.24em] text-black/45">{t("addEvent.latestEvent")}</p>
+                <p className="mt-2 text-lg font-semibold text-black">
+                  {chainPreview.lastBlock ? getEventLabel(chainPreview.lastBlock.event_type) : t("addEvent.noBlocksFound")}
+                </p>
+                <p className="mt-2 text-sm text-black/65">
+                  {chainPreview.lastBlock ? formatDateTime(chainPreview.lastBlock.timestamp, language, t) : t("addEvent.genesisRequired")}
+                </p>
+              </div>
+            </div>
+
+            {chainPreview.lastBlock ? (
+              <div className="mt-4 rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-black/45">
+                  <Link2 className="h-4 w-4" />
+                  {t("addEvent.lastVerifiedLink")}
+                </div>
+                <p className="font-mono text-xs leading-7 text-black/75">
+                  {shortHash(chainPreview.lastBlock.hash, 22, t)}
+                </p>
+              </div>
+            ) : null}
           </div>
 
-          <div className="mt-6 grid gap-4 sm:grid-cols-2">
-            <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <p className="text-xs uppercase tracking-[0.24em] text-black/45">Chain height</p>
-              <p className="mt-2 text-3xl font-semibold text-black">{chainPreview.count}</p>
-              <p className="mt-2 text-sm text-black/65">The next event becomes the next linked block.</p>
-            </div>
-            <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <p className="text-xs uppercase tracking-[0.24em] text-black/45">Latest event</p>
-              <p className="mt-2 text-lg font-semibold text-black">
-                {chainPreview.lastBlock ? toTitleCase(chainPreview.lastBlock.event_type) : "No blocks found"}
-              </p>
-              <p className="mt-2 text-sm text-black/65">
-                {chainPreview.lastBlock ? formatDateTime(chainPreview.lastBlock.timestamp) : "Genesis required"}
-              </p>
-            </div>
-          </div>
-
-          {chainPreview.lastBlock ? (
-            <div className="mt-4 rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <div className="mb-3 flex items-center gap-2 text-xs uppercase tracking-[0.24em] text-black/45">
-                <Link2 className="h-4 w-4" />
-                Last verified link
+          <div className="glass-panel p-6 lg:p-8">
+            <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">{t("addEvent.eventDesign")}</p>
+            <div className="mt-5 space-y-4">
+              <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <div className="mb-3 flex items-center gap-2 text-black/80">
+                  <MapPin className="h-4 w-4 text-finca-gold" />
+                  {t("addEvent.locationContext")}
+                </div>
+                <p className="text-sm leading-7 text-black/68">{t("addEvent.locationContextDesc")}</p>
               </div>
-              <p className="font-mono text-xs leading-7 text-black/75">
-                {shortHash(chainPreview.lastBlock.hash, 22)}
-              </p>
-            </div>
-          ) : null}
-        </div>
-
-        <div className="glass-panel p-6 lg:p-8">
-          <p className="text-sm uppercase tracking-[0.28em] text-finca-mint/70">Event design</p>
-          <div className="mt-5 space-y-4">
-            <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <div className="mb-3 flex items-center gap-2 text-black/80">
-                <MapPin className="h-4 w-4 text-finca-gold" />
-                Location context
+              <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
+                <div className="mb-3 flex items-center gap-2 text-black/80">
+                  <ScanSearch className="h-4 w-4 text-finca-mint" />
+                  {t("addEvent.structuredMetadata")}
+                </div>
+                <p className="text-sm leading-7 text-black/68">{t("addEvent.structuredMetadataDesc")}</p>
               </div>
-              <p className="text-sm leading-7 text-black/68">
-                Include where the event happened so the timeline can narrate movement from farm to consumer.
-              </p>
-            </div>
-            <div className="rounded-[24px] border border-black/10 bg-black/[0.03] p-5">
-              <div className="mb-3 flex items-center gap-2 text-black/80">
-                <ScanSearch className="h-4 w-4 text-finca-mint" />
-                Structured metadata
-              </div>
-              <p className="text-sm leading-7 text-black/68">
-                Extra details help explain who handled the batch, where it moved, and what happened next.
-              </p>
             </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }

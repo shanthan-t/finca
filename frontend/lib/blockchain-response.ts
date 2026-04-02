@@ -25,6 +25,7 @@ export function normalizeValidationResponse(
         message?: string;
         invalid_index?: number | null;
         broken_index?: number | null;
+        details?: string | null;
       }
 ): ValidationResponse {
   if ("result" in response && response.result) {
@@ -41,8 +42,13 @@ export function normalizeValidationResponse(
   return {
     valid: response.valid ?? response.is_valid ?? false,
     message: response.message,
-    invalid_index: invalidIndex
+    invalid_index: invalidIndex,
+    details: "details" in response ? response.details ?? null : null
   };
+}
+
+export function normalizeTimestampForValidation(timestamp: string) {
+  return timestamp.replace(/([+-]00(?::?00)?)$/, "Z");
 }
 
 function normalizeReturnedBlock(candidate: unknown, fallbackBatchId: string): Block | null {

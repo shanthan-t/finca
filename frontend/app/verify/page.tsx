@@ -2,10 +2,16 @@ import type { Metadata } from "next";
 
 import { VerifyWorkspace } from "@/components/forms/verify-workspace";
 import { getBatchOptions } from "@/lib/data";
+import { createTranslator } from "@/lib/i18n";
+import { getRequestLanguage } from "@/lib/i18n-server";
 
-export const metadata: Metadata = {
-  title: "Verify"
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const language = getRequestLanguage();
+  const t = createTranslator(language);
+  return {
+    title: t("verify.eyebrow")
+  };
+}
 
 export default async function VerifyPage() {
   const batches = await getBatchOptions();

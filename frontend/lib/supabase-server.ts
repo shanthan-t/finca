@@ -1,5 +1,3 @@
-import "server-only";
-
 import { createClient } from "@supabase/supabase-js";
 
 import type { Database } from "@/lib/types";
@@ -11,21 +9,21 @@ const clientOptions = {
   }
 };
 
-function getServerSupabaseUrl() {
-  return process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
+function getSupabaseUrl() {
+  return process.env.NEXT_PUBLIC_SUPABASE_URL?.trim() ?? "";
 }
 
-function getServerSupabaseAnonKey() {
-  return process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
+function getSupabaseAnonKey() {
+  return process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY?.trim() ?? "";
 }
 
-function getServerSupabaseWriteKey() {
-  return process.env.SUPABASE_SERVICE_ROLE_KEY ?? getServerSupabaseAnonKey();
+function getSupabaseServiceRoleKey() {
+  return process.env.SUPABASE_SERVICE_ROLE_KEY?.trim() ?? "";
 }
 
-export function createSupabaseServerReadClient() {
-  const url = getServerSupabaseUrl();
-  const key = getServerSupabaseAnonKey();
+export function createSupabaseAdminClient() {
+  const url = getSupabaseUrl();
+  const key = getSupabaseServiceRoleKey() || getSupabaseAnonKey();
 
   if (!url || !key) {
     return null;
@@ -34,13 +32,21 @@ export function createSupabaseServerReadClient() {
   return createClient<Database>(url, key, clientOptions);
 }
 
-export function createSupabaseServerWriteClient() {
-  const url = getServerSupabaseUrl();
-  const key = getServerSupabaseWriteKey();
+export function createSupabaseReadClient() {
+  const url = getSupabaseUrl();
+  const key = getSupabaseAnonKey();
 
   if (!url || !key) {
     return null;
   }
 
   return createClient<Database>(url, key, clientOptions);
+}
+
+export function hasServerSupabaseAccess() {
+  return Boolean(getSupabaseUrl() && (getSupabaseServiceRoleKey() || getSupabaseAnonKey()));
+}
+
+export function hasSupabaseServiceRole() {
+  return Boolean(getSupabaseUrl() && getSupabaseServiceRoleKey());
 }

@@ -2,10 +2,16 @@ import type { Metadata } from "next";
 
 import { AddEventForm } from "@/components/forms/add-event-form";
 import { getBatchOptions } from "@/lib/data";
+import { createTranslator } from "@/lib/i18n";
+import { getRequestLanguage } from "@/lib/i18n-server";
 
-export const metadata: Metadata = {
-  title: "Add Event"
-};
+export async function generateMetadata(): Promise<Metadata> {
+  const language = getRequestLanguage();
+  const t = createTranslator(language);
+  return {
+    title: t("addEvent.eyebrow")
+  };
+}
 
 export default async function AddEventPage({
   searchParams

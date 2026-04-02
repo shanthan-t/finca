@@ -1,13 +1,13 @@
 import { unstable_noStore as noStore } from "next/cache";
 
-import { createSupabaseServerReadClient } from "@/lib/supabase-server";
+import { createSupabaseServerClient } from "@/lib/supabase";
 import { deriveBatchFromBlocks, groupBlocksByBatch, mergeBatchSources } from "@/lib/utils";
 import type { Batch, BatchSummary, BatchWithBlocks, Block } from "@/lib/types";
 
 export async function getDashboardData() {
   noStore();
 
-  const supabase = createSupabaseServerReadClient();
+  const supabase = createSupabaseServerClient();
 
   if (!supabase) {
     return [] satisfies BatchSummary[];
@@ -46,7 +46,7 @@ export async function getDashboardData() {
 export async function getBatchOptions() {
   noStore();
 
-  const supabase = createSupabaseServerReadClient();
+  const supabase = createSupabaseServerClient();
 
   if (!supabase) {
     return [] satisfies Batch[];
@@ -71,7 +71,7 @@ export async function getBatchOptions() {
 export async function getBatchChain(batchId: string): Promise<BatchWithBlocks | null> {
   noStore();
 
-  const supabase = createSupabaseServerReadClient();
+  const supabase = createSupabaseServerClient();
 
   if (!supabase) {
     return null;

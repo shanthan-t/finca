@@ -7,6 +7,7 @@ Tagline: `From Farm to Trust — Verified.`
 Additional documentation:
 
 - [Frontend Development Guide](/home/shanthant/Desktop/Personal/Projects/Finca/frontend/FRONTEND_DEVELOPMENT.md)
+- [AI Documentation](/home/shanthant/Desktop/Personal/Projects/Finca/frontend/AI_DOCUMENTATION.md)
 
 ## Stack
 

@@ -1,1118 +1,1288 @@
-import { extractReturnedBlock, normalizeValidationResponse } from "@/lib/blockchain-response";
-import { getBatchChain, getDashboardData } from "@/lib/data";
-import { persistBatchAndGenesisServer, persistBlockServer } from "@/lib/persistence-server";
-import { getServerApiUrl } from "@/lib/server-api";
-import { toTitleCase } from "@/lib/utils";
+import { createTranslator } from "@/lib/i18n";
+import {
+  extractReturnedBlock,
+  normalizeTimestampForValidation,
+  normalizeValidationResponse
+} from "@/lib/blockchain-response";
+import { loadHistoryContext, logHistoryTurn, searchHistoryContext } from "@/lib/ai/history";
+import {
+  getBatchWithBlocksServer,
+  getBlocksByBatchIdServer,
+  getDashboardSummaryServer,
+  getLatestBlockForBatchServer,
+  persistBatchAndGenesisServer,
+  persistBlockServer
+} from "@/lib/persistence-server";
+import { postBlockchainJson } from "@/lib/server-api";
+import {
+  formatDateTime,
+  getBlockActor,
+  getBlockLocation,
+  getBlockNarrative,
+  toTitleCase
+} from "@/lib/utils";
 import type {
-  AiResponseEnvelope,
-  AiTurnRequest,
-  ApiMutationResponse,
-  BatchSummary,
+  AIApiCall,
+  AIHistoryEntry,
+  AIIntent,
+  AIPlannedApiCall,
+  AIQueryContext,
+  AIQueryRequest,
+  AIResponse,
+  AIResponseStyle,
+  AssistantUIAction,
   BatchWithBlocks,
   BlockData,
   CreateBatchPayload,
   CreateBlockPayload,
-  HistoryContextItem,
-  RouterApiCall,
-  RouterPlan,
-  SupportedIntent,
+  JsonValue,
   ValidationResponse
 } from "@/lib/types";
 
-const defaultLanguage = "en";
-const defaultModel = process.env.FINCA_AI_MODEL ?? "llama-3.3-70b-versatile";
-const routerVersion = "2026-04-01.2";
-const tamilScriptPattern = /\p{Script=Tamil}/u;
+const AI_ROUTER_VERSION = "2026-04-02.1";
+const MAX_QUERY_LENGTH = 1600;
 
-interface ResolvedContext {
-  batchId: string | null;
-  batchMetadata: Partial<CreateBatchPayload>;
-  eventType: string | null;
-  eventData: BlockData;
+const intentList: AIIntent[] = [
+  "create_batch",
+  "add_block",
+  "validate_chain",
+  "get_batch_details",
+  "get_dashboard_summary",
+  "explain_batch",
+  "translate_explain",
+  "voice_explain",
+  "search_history",
+  "tamper_check",
+  "unknown"
+];
+
+const eventAliases = [
+  { key: "quality checked", eventType: "quality_checked" },
+  { key: "quality check", eventType: "quality_checked" },
+  { key: "shelf stocked", eventType: "shelf_stocked" },
+  { key: "shelf stock", eventType: "shelf_stocked" },
+  { key: "batch created", eventType: "batch_created" },
+  { key: "created", eventType: "batch_created" },
+  { key: "harvested", eventType: "harvested" },
+  { key: "processed", eventType: "processed" },
+  { key: "packaged", eventType: "packaged" },
+  { key: "stored", eventType: "stored" },
+  { key: "shipped", eventType: "shipped" },
+  { key: "received", eventType: "received" }
+] as const;
+
+interface NormalizedAIRequest {
+  query: string;
+  queryLower: string;
   language: string;
   voiceMode: boolean;
-  responseStyle: "brief" | "detailed";
+  sessionId: string;
+  batchId: string | null;
+  responseStyle: AIResponseStyle;
+  context: AIQueryContext;
 }
 
-interface BuildRouterResult {
-  plan: RouterPlan;
-  currentBatch: BatchWithBlocks | null;
-  resolved: ResolvedContext;
+interface IntentDecision {
+  intent: AIIntent;
+  confidence: number;
 }
 
-interface ExecutionContext {
-  plan: RouterPlan;
-  currentBatch: BatchWithBlocks | null;
-  resolved: ResolvedContext;
+interface ResolvedBatchContext {
+  batchId: string | null;
+  historyUsed: AIHistoryEntry[];
 }
 
-function normalizeText(value: string) {
-  return value.trim().toLowerCase();
+interface RouterExecutionResult {
+  assistantMessage: string;
+  intent: AIIntent;
+  confidence: number;
+  data: Record<string, unknown>;
+  uiAction?: AssistantUIAction | null;
+  apiCallsMade: AIApiCall[];
+  executionResults: Record<string, unknown>;
+  historyUsed: AIHistoryEntry[];
+  requiresUserAction: boolean;
+  followUpQuestion: string | null;
+  audioUrl: string | null;
+  plannedApiCalls: AIPlannedApiCall[];
+  historyMetadata?: Record<string, JsonValue>;
+  apiResultSummary?: string | null;
+  ttsRequired?: boolean;
 }
 
-function sanitizeExtractedValue(value: string | null) {
-  return value?.trim().replace(/^["']|["']$/g, "").replace(/[.]+$/, "") || null;
+function createSessionId() {
+  return `session-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
 
-function hasAnyPhrase(query: string, phrases: string[]) {
-  const normalized = normalizeText(query);
-  return phrases.some((phrase) => normalized.includes(phrase));
+function getText(value: unknown) {
+  return typeof value === "string" ? value.trim() : "";
 }
 
-function inferLanguage(query: string, explicitLanguage?: string) {
-  if (explicitLanguage?.trim()) {
-    return explicitLanguage.trim().toLowerCase();
+function getRecord(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {} as Record<string, unknown>;
   }
 
-  if (tamilScriptPattern.test(query)) {
-    return "ta";
-  }
-
-  return defaultLanguage;
+  return value as Record<string, unknown>;
 }
 
-function extractBatchId(query: string) {
-  const explicitMatch = query.match(/\b(?:batch(?:\s+id)?|id)\s*[:=-]?\s*([A-Z]{2,}(?:-[A-Z0-9]+)+)\b/i);
-
-  if (explicitMatch?.[1]) {
-    return explicitMatch[1];
-  }
-
-  const fallbackMatch = query.match(/\b[A-Z]{2,}(?:-[A-Z0-9]+)+\b/);
-  return fallbackMatch?.[0] ?? null;
-}
-
-function extractLabelledValue(query: string, labels: string[]) {
-  const escapedLabels = labels.map((label) => label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-  const labelGroup = escapedLabels.join("|");
-  const patterns = [
-    new RegExp(`(?:${labelGroup})\\s*[:=-]\\s*([^,\\n]+)`, "i"),
-    new RegExp(`(?:${labelGroup})\\s+is\\s+([^,\\n]+)`, "i")
-  ];
-
-  for (const pattern of patterns) {
-    const match = query.match(pattern);
-
-    if (match?.[1]) {
-      return sanitizeExtractedValue(match[1]);
-    }
-  }
-
-  return null;
-}
-
-function inferCropFromCreateQuery(query: string) {
-  const match = query.match(/\b(?:create|register|start|open|new)\s+(?:a|an)?\s*([a-z][a-z\s]+?)\s+batch\b/i);
-  return sanitizeExtractedValue(match?.[1] ?? null);
-}
-
-function inferBatchMetadata(query: string, context?: AiTurnRequest["context"]): Partial<CreateBatchPayload> {
-  const batchId = context?.batch_id ?? extractBatchId(query);
-  const cropName = context?.crop_name ?? extractLabelledValue(query, ["crop", "crop name", "product", "crop_name"]) ?? inferCropFromCreateQuery(query);
-  const farmerName =
-    context?.farmer_name ?? extractLabelledValue(query, ["farmer", "farmer name", "producer", "farmer_name"]);
-  const farmLocation =
-    context?.farm_location ??
-    extractLabelledValue(query, ["farm location", "location", "origin", "farm_location", "source"]);
+function parseRequest(payload: AIQueryRequest): NormalizedAIRequest {
+  const query = getText(payload.query);
+  const context = getRecord(payload.context) as AIQueryContext;
+  const batchId = getText(payload.batch_id) || getText(context.batch_id) || null;
+  const responseStyle = payload.response_style ?? "brief";
 
   return {
-    ...(batchId ? { batch_id: batchId } : {}),
-    ...(cropName ? { crop_name: cropName } : {}),
-    ...(farmerName ? { farmer_name: farmerName } : {}),
-    ...(farmLocation ? { farm_location: farmLocation } : {})
+    query,
+    queryLower: query.toLowerCase(),
+    language: getText(payload.language) || "en",
+    voiceMode: Boolean(payload.voice_mode),
+    sessionId: getText(payload.session_id) || createSessionId(),
+    batchId,
+    responseStyle,
+    context
   };
 }
 
-function inferEventType(query: string, explicitEventType?: string) {
-  if (explicitEventType?.trim()) {
-    return explicitEventType.trim().toLowerCase().replace(/\s+/g, "_");
-  }
-
-  const normalized = normalizeText(query);
-  const eventMap: Array<[string, string]> = [
-    ["transport", "shipped"],
-    ["ship", "shipped"],
-    ["shipment", "shipped"],
-    ["harvest", "harvested"],
-    ["process", "processed"],
-    ["quality", "quality_checked"],
-    ["package", "packaged"],
-    ["store", "stored"],
-    ["receive", "received"],
-    ["shelf", "shelf_stocked"]
-  ];
-
-  return eventMap.find(([keyword]) => normalized.includes(keyword))?.[1] ?? null;
-}
-
-function inferEventData(query: string, initialData?: BlockData): BlockData {
-  const labelledMappings: Array<[string, string[]]> = [
-    ["actor", ["actor", "handled by", "carrier actor"]],
-    ["location", ["location", "place"]],
-    ["status", ["status"]],
-    ["note", ["note", "summary", "description"]],
-    ["destination", ["destination"]],
-    ["warehouse", ["warehouse"]],
-    ["carrier", ["carrier"]],
-    ["shipment_id", ["shipment id", "shipment_id"]],
-    ["vehicle_id", ["vehicle id", "vehicle_id"]],
-    ["temperature", ["temperature"]],
-    ["condition", ["condition"]],
-    ["market", ["market"]],
-    ["certification", ["certification"]]
-  ];
-
-  const merged: BlockData = {
-    ...(initialData ?? {})
-  };
-
-  for (const [key, labels] of labelledMappings) {
-    const value = extractLabelledValue(query, labels);
-
-    if (value) {
-      merged[key] = value;
-    }
-  }
-
-  return merged;
-}
-
-function inferResponseStyle(query: string, explicitStyle?: "brief" | "detailed") {
-  if (explicitStyle) {
-    return explicitStyle;
-  }
-
-  if (hasAnyPhrase(query, ["detail", "detailed", "full timeline", "full details", "explain fully"])) {
-    return "detailed";
-  }
-
-  return "brief";
-}
-
-function shouldResolveRelativeBatch(query: string) {
-  return hasAnyPhrase(query, [
-    "verify it",
-    "validate it",
-    "check it",
-    "explain it",
-    "this batch",
-    "this chain",
-    "the last batch",
-    "the last one",
-    "latest batch",
-    "latest chain",
-    "last batch",
-    "last chain",
-    "this one"
-  ]);
-}
-
-function detectIntentHeuristically(query: string, options: { voiceMode: boolean; language: string }): SupportedIntent {
-  const normalized = normalizeText(query);
-
-  if (
-    options.voiceMode ||
-    normalized.includes("voice") ||
-    normalized.includes("audio") ||
-    normalized.includes("speak") ||
-    normalized.includes("read this out") ||
-    normalized.includes("குரல்")
-  ) {
-    return "voice_explain";
-  }
-
-  if (
-    normalized.includes("dashboard") ||
-    normalized.includes("summary") ||
-    normalized.includes("overview") ||
-    normalized.includes("சுருக்கம்")
-  ) {
-    return "get_dashboard_summary";
-  }
-
-  if (
-    normalized.includes("history") ||
-    normalized.includes("search history") ||
-    normalized.includes("what did we do") ||
-    normalized.includes("வரலாறு")
-  ) {
-    return "search_history";
-  }
-
-  if (
-    normalized.includes("tamper") ||
-    normalized.includes("tampered") ||
-    normalized.includes("integrity issue")
-  ) {
-    return "tamper_check";
-  }
-
-  if (normalized.includes("validate") || normalized.includes("verify") || normalized.includes("சரிபார்") || normalized.includes("சரிபார்க்க")) {
-    return "validate_chain";
-  }
-
-  if (
-    normalized.includes("create") ||
-    normalized.includes("new batch") ||
-    normalized.includes("register batch") ||
-    normalized.includes("genesis") ||
-    normalized.includes("உருவாக்க")
-  ) {
-    return "create_batch";
-  }
-
-  if (
-    normalized.includes("add") ||
-    normalized.includes("append") ||
-    normalized.includes("record event") ||
-    normalized.includes("log event") ||
-    normalized.includes("சேர்க்க")
-  ) {
-    return "add_block";
-  }
-
-  if (
-    normalized.includes("details") ||
-    normalized.includes("show batch") ||
-    normalized.includes("batch details") ||
-    normalized.includes("inspect batch")
-  ) {
-    return "get_batch_details";
-  }
-
-  if (
-    normalized.includes("where") ||
-    normalized.includes("origin") ||
-    normalized.includes("what happened") ||
-    normalized.includes("timeline") ||
-    normalized.includes("explain batch") ||
-    normalized.includes("எங்கிருந்து") ||
-    normalized.includes("எங்கு")
-  ) {
-    return options.language !== defaultLanguage ? "translate_explain" : "explain_batch";
-  }
-
-  return "unknown";
-}
-
-async function maybeClassifyIntentWithGroq(input: {
-  query: string;
-  history: HistoryContextItem[];
-  heuristicIntent: SupportedIntent;
-  language: string;
-  voiceMode: boolean;
-}) {
-  if (!process.env.GROQ_API_KEY) {
-    return null;
-  }
-
-  if (input.language === defaultLanguage && input.heuristicIntent !== "unknown" && !input.voiceMode) {
-    return null;
-  }
-
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+function getSchemaDescription() {
+  return {
+    route: "/api/ai",
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: defaultModel,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content:
-            "You are Finca AI. Classify the user request into exactly one supported intent and return JSON with keys intent and confidence. Supported intents: create_batch, add_block, validate_chain, get_batch_details, get_dashboard_summary, explain_batch, translate_explain, voice_explain, search_history, tamper_check, unknown. Never invent facts."
-        },
-        {
-          role: "user",
-          content: JSON.stringify({
-            query: input.query,
-            language: input.language,
-            voice_mode: input.voiceMode,
-            heuristic_intent: input.heuristicIntent,
-            history: input.history.slice(-5)
-          })
-        }
-      ]
-    }),
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    return null;
-  }
-
-  const json = (await response.json().catch(() => null)) as
-    | {
-        choices?: Array<{
-          message?: {
-            content?: string;
-          };
-        }>;
+    router_version: AI_ROUTER_VERSION,
+    request_schema: {
+      query: "string",
+      language: "string?",
+      voice_mode: "boolean?",
+      session_id: "string?",
+      batch_id: "string?",
+      response_style: "brief | detailed ?",
+      context: {
+        batch_id: "string?",
+        crop_name: "string?",
+        farmer_name: "string?",
+        farm_location: "string?",
+        event_type: "string?",
+        data: "object?"
       }
-    | null;
+    }
+  };
+}
 
-  const content = json?.choices?.[0]?.message?.content;
+function containsAny(text: string, words: string[]) {
+  return words.some((word) => text.includes(word));
+}
 
-  if (!content) {
+function getBatchIdFromQuery(query: string) {
+  const explicitMatch = query.match(/\bbatch(?:\s+id)?\s+([A-Z0-9]+(?:-[A-Z0-9]+)+)\b/i);
+
+  if (explicitMatch?.[1]) {
+    return explicitMatch[1].toUpperCase();
+  }
+
+  const tokenMatch = query.match(/\b[A-Z0-9]+(?:-[A-Z0-9]+)+\b/);
+  return tokenMatch?.[0]?.toUpperCase() ?? null;
+}
+
+function getEventTypeFromQuery(queryLower: string) {
+  const directAlias = eventAliases.find((alias) => queryLower.includes(alias.key));
+
+  return directAlias?.eventType ?? null;
+}
+
+function extractCreateBatchFieldsFromText(text: string) {
+  const query = text.trim();
+
+  if (!query) {
+    return {
+      batch_id: "",
+      crop_name: "",
+      farmer_name: "",
+      farm_location: ""
+    };
+  }
+
+  const cropFromQuery = query.match(/create\s+(?:a|an|new)?\s*([a-z][a-z\s-]+?)\s+batch/i)?.[1] ?? "";
+  const farmerFromQuery = query.match(/\bfor\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/i)?.[1] ?? "";
+  const locationFromQuery = query.match(/\bin\s+([A-Z][A-Za-z\s,-]+?)(?:\s+with\b|$)/i)?.[1] ?? "";
+  const followUpLocationFromQuery =
+    query.match(/^([A-Z][A-Za-z\s,-]+?)\s+with\s+batch(?:\s+id)?\s+[A-Z0-9]+(?:-[A-Z0-9]+)+/i)?.[1] ?? "";
+  const batchIdFromQuery = getBatchIdFromQuery(query) ?? "";
+
+  return {
+    batch_id: batchIdFromQuery,
+    crop_name: cropFromQuery ? toTitleCase(cropFromQuery) : "",
+    farmer_name: farmerFromQuery,
+    farm_location: locationFromQuery || followUpLocationFromQuery
+  };
+}
+
+function buildMissingFieldQuestion(fields: string[]) {
+  if (fields.length === 1) {
+    return `I still need ${fields[0]} to complete this request.`;
+  }
+
+  return `I still need ${fields.join(", ")} to complete this request.`;
+}
+
+function resolveBatchContext(request: NormalizedAIRequest, history: AIHistoryEntry[]): ResolvedBatchContext {
+  if (request.batchId) {
+    return { batchId: request.batchId, historyUsed: [] };
+  }
+
+  const batchIdFromQuery = getBatchIdFromQuery(request.query);
+
+  if (batchIdFromQuery) {
+    return { batchId: batchIdFromQuery, historyUsed: [] };
+  }
+
+  const historyEntry = [...history].reverse().find((entry) => entry.batch_id);
+
+  if (historyEntry?.batch_id) {
+    return {
+      batchId: historyEntry.batch_id,
+      historyUsed: [historyEntry]
+    };
+  }
+
+  return {
+    batchId: null,
+    historyUsed: []
+  };
+}
+
+function heuristicallyClassifyIntent(request: NormalizedAIRequest) {
+  const query = request.queryLower;
+  const hasEventContext = Boolean(getText(request.context.event_type) || getRecord(request.context.data) && Object.keys(getRecord(request.context.data)).length > 0);
+  const hasCreateContext =
+    Boolean(getText(request.context.crop_name)) ||
+    Boolean(getText(request.context.farmer_name)) ||
+    Boolean(getText(request.context.farm_location));
+
+  if (containsAny(query, ["search history", "history", "last query", "recent query", "what did i ask"])) {
+    return { intent: "search_history", confidence: 0.83 } satisfies IntentDecision;
+  }
+
+  if (containsAny(query, ["dashboard", "summary", "overview", "how many batches", "all batches"])) {
+    return { intent: "get_dashboard_summary", confidence: 0.84 } satisfies IntentDecision;
+  }
+
+  if (containsAny(query, ["tamper", "compromised", "broken custody", "integrity compromised"])) {
+    return { intent: "tamper_check", confidence: 0.95 } satisfies IntentDecision;
+  }
+
+  if (containsAny(query, ["validate", "verify", "integrity check", "is the chain valid", "check the chain"])) {
+    return { intent: "validate_chain", confidence: 0.95 } satisfies IntentDecision;
+  }
+
+  if (containsAny(query, ["create", "new batch", "register batch", "genesis"]) || hasCreateContext) {
+    return { intent: "create_batch", confidence: hasCreateContext ? 0.92 : 0.72 } satisfies IntentDecision;
+  }
+
+  if (
+    containsAny(query, ["add", "append", "record event", "update batch", "log event"]) ||
+    hasEventContext ||
+    Boolean(getEventTypeFromQuery(query))
+  ) {
+    return { intent: "add_block", confidence: hasEventContext ? 0.93 : 0.78 } satisfies IntentDecision;
+  }
+
+  if (containsAny(query, ["show batch", "open batch", "batch details", "chain details", "show me the batch"])) {
+    return { intent: "get_batch_details", confidence: 0.81 } satisfies IntentDecision;
+  }
+
+  if (request.voiceMode && containsAny(query, ["where", "origin", "provenance", "explain", "came from", "journey"])) {
+    return { intent: "voice_explain", confidence: 0.86 } satisfies IntentDecision;
+  }
+
+  if (request.language !== "en" && containsAny(query, ["where", "origin", "provenance", "came from", "explain"])) {
+    return { intent: "translate_explain", confidence: 0.82 } satisfies IntentDecision;
+  }
+
+  if (
+    request.language !== "en" &&
+    request.batchId &&
+    request.query.length > 0 &&
+    !containsAny(query, ["create", "add", "validate", "verify"])
+  ) {
+    return { intent: "translate_explain", confidence: 0.72 } satisfies IntentDecision;
+  }
+
+  if (containsAny(query, ["where", "origin", "provenance", "came from", "trace", "journey", "explain"])) {
+    return { intent: "explain_batch", confidence: 0.82 } satisfies IntentDecision;
+  }
+
+  return { intent: "unknown", confidence: 0.34 } satisfies IntentDecision;
+}
+
+async function classifyIntentWithGroq(request: NormalizedAIRequest, history: AIHistoryEntry[]) {
+  const apiKey = process.env.GROQ_API_KEY?.trim();
+
+  if (!apiKey) {
     return null;
   }
+
+  const model = process.env.FINCA_AI_MODEL?.trim() || "llama-3.3-70b-versatile";
+  const recentHistory = history.slice(-4);
 
   try {
-    const parsed = JSON.parse(content) as {
-      intent?: SupportedIntent;
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.1,
+        max_tokens: 200,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You classify Finca agricultural supply-chain requests. Return JSON only with keys intent and confidence. Valid intents: " +
+              intentList.join(", ") +
+              "."
+          },
+          {
+            role: "user",
+            content: JSON.stringify({
+              query: request.query,
+              language: request.language,
+              voice_mode: request.voiceMode,
+              batch_id: request.batchId,
+              context: request.context,
+              history: recentHistory
+            })
+          }
+        ]
+      }),
+      cache: "no-store"
+    });
+
+    const data = (await response.json().catch(() => null)) as
+      | {
+          choices?: Array<{
+            message?: {
+              content?: string;
+            };
+          }>;
+        }
+      | null;
+
+    const content = data?.choices?.[0]?.message?.content?.trim();
+
+    if (!content) {
+      return null;
+    }
+
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+
+    if (!jsonMatch) {
+      return null;
+    }
+
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      intent?: string;
       confidence?: number;
     };
 
-    if (!parsed.intent) {
+    if (!parsed.intent || !intentList.includes(parsed.intent as AIIntent)) {
       return null;
     }
 
     return {
-      intent: parsed.intent,
+      intent: parsed.intent as AIIntent,
       confidence:
         typeof parsed.confidence === "number" && Number.isFinite(parsed.confidence)
           ? Math.max(0, Math.min(1, parsed.confidence))
-          : null
-    };
+          : 0.7
+    } satisfies IntentDecision;
   } catch {
     return null;
   }
 }
 
-async function getLatestBatchIdFromDashboard() {
-  const dashboard = await getDashboardData();
+async function decideIntent(request: NormalizedAIRequest, history: AIHistoryEntry[]) {
+  const heuristic = heuristicallyClassifyIntent(request);
 
-  const latest = [...dashboard].sort((left, right) => {
-    const leftTime = Date.parse(left.last_timestamp ?? left.created_at ?? "") || 0;
-    const rightTime = Date.parse(right.last_timestamp ?? right.created_at ?? "") || 0;
-    return rightTime - leftTime;
-  })[0];
-
-  return latest?.batch_id ?? null;
-}
-
-function getLatestBatchIdFromHistory(history: HistoryContextItem[]) {
-  return (
-    history
-      .slice()
-      .reverse()
-      .find((item) => item.batch_id)?.batch_id ?? null
-  );
-}
-
-async function resolveContext(request: AiTurnRequest, history: HistoryContextItem[]): Promise<ResolvedContext> {
-  const language = inferLanguage(request.query, request.language);
-  const batchMetadata = inferBatchMetadata(request.query, request.context);
-  let batchId = request.batch_id ?? request.context?.batch_id ?? extractBatchId(request.query) ?? batchMetadata.batch_id ?? null;
-
-  if (!batchId && shouldResolveRelativeBatch(request.query)) {
-    batchId = getLatestBatchIdFromHistory(history);
+  if (heuristic.confidence >= 0.86 && request.language === "en") {
+    return heuristic;
   }
 
-  if (!batchId && hasAnyPhrase(request.query, ["latest batch", "last batch", "latest chain", "last chain"])) {
-    batchId = await getLatestBatchIdFromDashboard();
+  const groqDecision = await classifyIntentWithGroq(request, history);
+
+  if (groqDecision && groqDecision.confidence >= heuristic.confidence) {
+    return groqDecision;
+  }
+
+  return heuristic;
+}
+
+function getCreateBatchDraft(
+  request: NormalizedAIRequest,
+  resolvedBatchId: string | null,
+  history: AIHistoryEntry[]
+) {
+  const currentDraft = extractCreateBatchFieldsFromText(request.query);
+  const relevantHistory = [...history]
+    .reverse()
+    .filter((entry) => entry.type === "create_batch" && typeof entry.user_query === "string" && entry.user_query.trim());
+
+  let historyDraft = {
+    batch_id: "",
+    crop_name: "",
+    farmer_name: "",
+    farm_location: ""
+  };
+
+  for (const entry of relevantHistory) {
+    const parsed = extractCreateBatchFieldsFromText(entry.user_query ?? "");
+
+    historyDraft = {
+      batch_id: historyDraft.batch_id || parsed.batch_id,
+      crop_name: historyDraft.crop_name || parsed.crop_name,
+      farmer_name: historyDraft.farmer_name || parsed.farmer_name,
+      farm_location: historyDraft.farm_location || parsed.farm_location
+    };
   }
 
   return {
-    batchId,
-    batchMetadata,
-    eventType: inferEventType(request.query, request.context?.event_type),
-    eventData: inferEventData(request.query, request.context?.data),
-    language,
-    voiceMode: Boolean(request.voice_mode),
-    responseStyle: inferResponseStyle(request.query, request.response_style)
+    batch_id:
+      resolvedBatchId ??
+      (getText(request.context.batch_id) || currentDraft.batch_id || historyDraft.batch_id),
+    crop_name: getText(request.context.crop_name) || currentDraft.crop_name || historyDraft.crop_name,
+    farmer_name: getText(request.context.farmer_name) || currentDraft.farmer_name || historyDraft.farmer_name,
+    farm_location:
+      getText(request.context.farm_location) || currentDraft.farm_location || historyDraft.farm_location
   };
 }
 
-function selectRelevantHistory(history: HistoryContextItem[], batchId: string | null) {
-  const filtered = batchId ? history.filter((item) => item.batch_id === batchId) : history;
-  const selected = filtered.length > 0 ? filtered : history;
-  return selected.slice(-5);
+function getAddBlockDraft(request: NormalizedAIRequest, resolvedBatchId: string | null) {
+  const eventType = getText(request.context.event_type) || getEventTypeFromQuery(request.queryLower) || "";
+  const data = getRecord(request.context.data);
+
+  return {
+    batch_id: resolvedBatchId ?? "",
+    event_type: eventType,
+    data: data as BlockData
+  };
 }
 
-function makeFollowUpPlan(
-  intent: SupportedIntent,
-  question: string,
-  history: HistoryContextItem[],
-  responseStyle: "brief" | "detailed",
-  ttsRequired = false
-): RouterPlan {
+function getUiAction(intent: AIIntent, hasAudio: boolean, requiresUserAction: boolean): AssistantUIAction | null {
+  if (hasAudio) {
+    return "PLAY_AUDIO";
+  }
+
+  if (requiresUserAction || intent === "unknown") {
+    return "SHOW_ERROR";
+  }
+
+  switch (intent) {
+    case "create_batch":
+    case "add_block":
+    case "get_batch_details":
+    case "explain_batch":
+    case "translate_explain":
+    case "voice_explain":
+      return "SHOW_BATCH_DETAILS";
+    case "validate_chain":
+    case "tamper_check":
+      return "SHOW_VERIFICATION_RESULT";
+    case "get_dashboard_summary":
+      return "SHOW_DASHBOARD";
+    default:
+      return null;
+  }
+}
+
+function buildFollowUpResult({
+  assistantMessage,
+  intent,
+  confidence,
+  followUpQuestion,
+  historyUsed,
+  plannedApiCalls
+}: {
+  assistantMessage: string;
+  intent: AIIntent;
+  confidence: number;
+  followUpQuestion: string;
+  historyUsed: AIHistoryEntry[];
+  plannedApiCalls: AIPlannedApiCall[];
+}): RouterExecutionResult {
   return {
+    assistantMessage,
     intent,
-    confidence: 0.45,
-    requires_api_call: false,
-    api_calls: [],
-    history_context_used: history,
-    response_style: responseStyle,
-    tts_required: ttsRequired,
-    follow_up_needed: true,
-    follow_up_question: question
+    confidence,
+    data: {},
+    uiAction: "SHOW_ERROR",
+    apiCallsMade: [],
+    executionResults: {},
+    historyUsed,
+    requiresUserAction: true,
+    followUpQuestion,
+    audioUrl: null,
+    plannedApiCalls,
+    apiResultSummary: followUpQuestion,
+    ttsRequired: false
   };
 }
 
-function blockchainPost(endpoint: string, payload: Record<string, unknown>): RouterApiCall {
+function buildValidationMessage(validation: ValidationResponse) {
+  if (validation.valid) {
+    return "The chain is valid and no broken index was reported.";
+  }
+
+  if (typeof validation.invalid_index === "number") {
+    return `Integrity compromised. The chain failed at block ${validation.invalid_index}.`;
+  }
+
+  return validation.message || "Integrity compromised. The validator reported a broken custody path.";
+}
+
+function buildBatchExplanation(batch: BatchWithBlocks, style: AIResponseStyle) {
+  const genesis = batch.blocks.find((block) => block.index === 0) ?? batch.blocks[0] ?? null;
+  const latest = batch.blocks.at(-1) ?? null;
+  const intro = `Batch ${batch.batch_id} is ${batch.crop_name} from ${batch.farmer_name} in ${batch.farm_location}.`;
+
+  if (!latest || !genesis) {
+    return `${intro} The origin record exists, but the chain details are still minimal.`;
+  }
+
+  // AI construction usually stays in English as it's translated later by maybeTranslateMessage
+  const t = createTranslator("en");
+  const latestActor = getBlockActor(latest, batch, t);
+  const latestLocation = getBlockLocation(latest, batch, t);
+  const latestNarrative = getBlockNarrative(latest, t);
+  const summary = `${intro} The chain currently contains ${batch.blocks.length} block${batch.blocks.length === 1 ? "" : "s"}. The latest event is ${toTitleCase(latest.event_type)} by ${latestActor} in ${latestLocation}.`;
+
+  if (style !== "detailed") {
+    return summary;
+  }
+
+  return `${summary} It started on ${formatDateTime(genesis.timestamp, "en", t)} and the most recent record was logged on ${formatDateTime(latest.timestamp, "en", t)}. Latest note: ${latestNarrative}.`;
+}
+
+function buildDashboardMessage(
+  summaries: Awaited<ReturnType<typeof getDashboardSummaryServer>>,
+  style: AIResponseStyle
+) {
+  const totalBlocks = summaries.reduce((total, batch) => total + batch.block_count, 0);
+
+  if (summaries.length === 0) {
+    return "No batches are stored yet. Create the first batch to begin the trusted chain history.";
+  }
+
+  const latestBatch = [...summaries]
+    .sort((left, right) => (right.last_timestamp ?? "").localeCompare(left.last_timestamp ?? ""))
+    .at(0);
+
+  const intro = `${summaries.length} batch${summaries.length === 1 ? "" : "es"} are currently tracked with ${totalBlocks} total recorded block${totalBlocks === 1 ? "" : "s"}.`;
+
+  if (style !== "detailed" || !latestBatch) {
+    return intro;
+  }
+
+  const t = createTranslator("en");
+  return `${intro} The most recent activity is on batch ${latestBatch.batch_id}, where the latest event is ${toTitleCase(latestBatch.last_event_type ?? "origin record")} at ${latestBatch.last_timestamp ? formatDateTime(latestBatch.last_timestamp, "en", t) : "an unconfirmed time"}.`;
+}
+
+async function maybeTranslateMessage(message: string, request: NormalizedAIRequest, warnings: string[]) {
+  if (request.language === "en") {
+    return message;
+  }
+
+  const apiKey = process.env.GROQ_API_KEY?.trim();
+
+  if (!apiKey) {
+    warnings.push(`GROQ_API_KEY is missing, so the assistant returned an English fallback instead of ${request.language}.`);
+    return message;
+  }
+
+  const model = process.env.FINCA_AI_MODEL?.trim() || "llama-3.3-70b-versatile";
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        max_tokens: 300,
+        messages: [
+          {
+            role: "system",
+            content:
+              `Translate the following Finca assistant message into ${request.language}. Preserve batch IDs, hashes, event types, and factual meaning. Return only translated text.`
+          },
+          {
+            role: "user",
+            content: message
+          }
+        ]
+      }),
+      cache: "no-store"
+    });
+
+    const data = (await response.json().catch(() => null)) as
+      | {
+          choices?: Array<{
+            message?: {
+              content?: string;
+            };
+          }>;
+        }
+      | null;
+
+    const content = data?.choices?.[0]?.message?.content?.trim();
+
+    if (!content) {
+      warnings.push(`Groq returned an empty translation for language ${request.language}.`);
+      return message;
+    }
+
+    return content;
+  } catch {
+    warnings.push(`Groq translation failed for language ${request.language}, so the assistant returned an English fallback.`);
+    return message;
+  }
+}
+
+async function handleCreateBatch(
+  request: NormalizedAIRequest,
+  decision: IntentDecision,
+  resolvedBatch: ResolvedBatchContext,
+  history: AIHistoryEntry[]
+): Promise<RouterExecutionResult> {
+  const draft = getCreateBatchDraft(request, resolvedBatch.batchId, history);
+  const missingFields = Object.entries(draft)
+    .filter(([, value]) => !value)
+    .map(([key]) => key.replace(/_/g, " "));
+
+  const plannedApiCalls: AIPlannedApiCall[] = [
+    {
+      service: "python_blockchain",
+      endpoint: "/batches",
+      method: "POST",
+      payload: draft
+    }
+  ];
+
+  if (missingFields.length > 0) {
+    const question = buildMissingFieldQuestion(missingFields);
+
+    return buildFollowUpResult({
+      assistantMessage: question,
+      intent: "create_batch",
+      confidence: decision.confidence,
+      followUpQuestion: question,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls
+    });
+  }
+
+  const response = await postBlockchainJson("/batches", draft as CreateBatchPayload);
+  const block = extractReturnedBlock(response as Record<string, unknown>, draft.batch_id);
+
+  if (!block) {
+    throw new Error("The blockchain backend did not return a usable genesis block.");
+  }
+
+  await persistBatchAndGenesisServer(
+    {
+      ...draft,
+      created_at: block.timestamp
+    },
+    block
+  );
+
+  const assistantMessage =
+    typeof (response as { message?: string }).message === "string" && (response as { message?: string }).message?.trim()
+      ? ((response as { message?: string }).message as string)
+      : `Created batch ${draft.batch_id} and issued genesis block ${block.index}.`;
+
   return {
+    assistantMessage,
+    intent: "create_batch",
+    confidence: decision.confidence,
+    data: {
+      batch_id: draft.batch_id,
+      block_index: block.index,
+      hash: block.hash
+    },
+    uiAction: "SHOW_BATCH_DETAILS",
+    apiCallsMade: [
+      { endpoint: "/batches", method: "POST", service: "python_blockchain", ok: true },
+      { endpoint: "/batches,blocks", method: "POST", service: "supabase", ok: true }
+    ],
+    executionResults: {
+      "/batches": {
+        success: true,
+        block_index: block.index
+      }
+    },
+    historyUsed: resolvedBatch.historyUsed,
+    requiresUserAction: false,
+    followUpQuestion: null,
+    audioUrl: null,
+    plannedApiCalls,
+    historyMetadata: {
+      batch_id: draft.batch_id,
+      event_type: block.event_type,
+      hash: block.hash
+    },
+    apiResultSummary: `Batch ${draft.batch_id} was created and its genesis block was issued as block ${block.index}.`,
+    ttsRequired: false
+  };
+}
+
+async function handleAddBlock(
+  request: NormalizedAIRequest,
+  decision: IntentDecision,
+  resolvedBatch: ResolvedBatchContext
+): Promise<RouterExecutionResult> {
+  const draft = getAddBlockDraft(request, resolvedBatch.batchId);
+  const plannedApiCalls: AIPlannedApiCall[] = [];
+  const missingFields: string[] = [];
+
+  if (!draft.batch_id) {
+    missingFields.push("batch id");
+  }
+
+  if (!draft.event_type) {
+    missingFields.push("event type");
+  }
+
+  if (missingFields.length > 0) {
+    const question = buildMissingFieldQuestion(missingFields);
+
+    return buildFollowUpResult({
+      assistantMessage: question,
+      intent: "add_block",
+      confidence: decision.confidence,
+      followUpQuestion: question,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls
+    });
+  }
+
+  const lastBlock = await getLatestBlockForBatchServer(draft.batch_id);
+
+  if (!lastBlock) {
+    return buildFollowUpResult({
+      assistantMessage: `No genesis block is stored for batch ${draft.batch_id} yet.`,
+      intent: "add_block",
+      confidence: decision.confidence,
+      followUpQuestion: `Create batch ${draft.batch_id} first, then I can add the new event.`,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls
+    });
+  }
+
+  const payload: CreateBlockPayload = {
+    batch_id: draft.batch_id,
+    event_type: draft.event_type,
+    data: draft.data,
+    previous_hash: lastBlock.hash,
+    index: lastBlock.index + 1
+  };
+
+  plannedApiCalls.push({
     service: "python_blockchain",
-    endpoint,
+    endpoint: "/blocks",
     method: "POST",
-    payload
-  };
-}
+    payload: payload as unknown as Record<string, unknown>
+  });
 
-function supabaseGet(endpoint: string, payload: Record<string, unknown> | null): RouterApiCall {
+  const response = await postBlockchainJson("/blocks", payload);
+  const block = extractReturnedBlock(response as Record<string, unknown>, draft.batch_id);
+
+  if (!block) {
+    throw new Error("The blockchain backend did not return a usable block.");
+  }
+
+  await persistBlockServer(block);
+
+  const assistantMessage =
+    typeof (response as { message?: string }).message === "string" && (response as { message?: string }).message?.trim()
+      ? ((response as { message?: string }).message as string)
+      : `Added ${toTitleCase(block.event_type)} to batch ${draft.batch_id} as block ${block.index}.`;
+
   return {
-    service: "supabase",
-    endpoint,
-    method: "GET",
-    payload
-  };
-}
-
-async function fetchBlockchain<T>(call: RouterApiCall) {
-  const response = await fetch(`${getServerApiUrl()}${call.endpoint}`, {
-    method: call.method,
-    headers: {
-      "Content-Type": "application/json"
+    assistantMessage,
+    intent: "add_block",
+    confidence: decision.confidence,
+    data: {
+      batch_id: draft.batch_id,
+      block_index: block.index,
+      event_type: block.event_type,
+      hash: block.hash
     },
-    body: call.payload ? JSON.stringify(call.payload) : undefined,
-    cache: "no-store"
-  });
-
-  const data = (await response.json().catch(() => null)) as T | null;
-
-  if (!response.ok) {
-    const message =
-      data && typeof data === "object" && "message" in data && typeof data.message === "string"
-        ? data.message
-        : `Request failed with status ${response.status}`;
-
-    throw new Error(message);
-  }
-
-  if (!data) {
-    throw new Error("The blockchain service returned an empty response.");
-  }
-
-  return data;
-}
-
-function summarizeValidation(result: ValidationResponse) {
-  return result.valid
-    ? "The chain is valid and no broken index was reported."
-    : `The chain is invalid${typeof result.invalid_index === "number" ? ` at block ${result.invalid_index}` : ""}.`;
-}
-
-function buildDashboardSummaryMessage(dashboard: BatchSummary[], style: "brief" | "detailed") {
-  if (dashboard.length === 0) {
-    return "There are no batches in the dashboard yet.";
-  }
-
-  const latest = [...dashboard].sort((left, right) => {
-    const leftTime = Date.parse(left.last_timestamp ?? left.created_at ?? "") || 0;
-    const rightTime = Date.parse(right.last_timestamp ?? right.created_at ?? "") || 0;
-    return rightTime - leftTime;
-  })[0];
-
-  if (style === "detailed") {
-    const preview = dashboard
-      .slice(0, 5)
-      .map((batch) => `${batch.batch_id} (${batch.crop_name}, ${batch.block_count} blocks)`)
-      .join(" | ");
-
-    return `Dashboard currently tracks ${dashboard.length} batches. Latest activity: ${latest.batch_id} with ${latest.last_event_type ?? "genesis"} at ${latest.last_timestamp ?? latest.created_at ?? "unknown time"}. Preview: ${preview}.`;
-  }
-
-  return `Dashboard tracks ${dashboard.length} batches. Latest activity is on ${latest.batch_id}.`;
-}
-
-function buildBatchTimeline(batch: BatchWithBlocks, style: "brief" | "detailed") {
-  const selectedBlocks = style === "detailed" ? batch.blocks : batch.blocks.slice(0, 4);
-
-  return selectedBlocks
-    .map((block) => `${block.index}. ${toTitleCase(block.event_type)} at ${block.timestamp}`)
-    .join(" | ");
-}
-
-function buildBatchExplanation(batch: BatchWithBlocks, validation: ValidationResponse | null, style: "brief" | "detailed") {
-  const base = `Batch ${batch.batch_id} began at ${batch.farm_location} with ${batch.crop_name} from ${batch.farmer_name}.`;
-  const validationText = validation ? ` ${summarizeValidation(validation)}` : "";
-  const timeline = buildBatchTimeline(batch, style);
-
-  if (style === "detailed") {
-    return `${base}${validationText} Timeline: ${timeline}. Total blocks: ${batch.blocks.length}.`;
-  }
-
-  return `${base}${validationText} Latest recorded flow: ${timeline || "No chain events found."}.`;
-}
-
-function buildHistorySummary(history: HistoryContextItem[], style: "brief" | "detailed") {
-  if (history.length === 0) {
-    return "There is no saved router history for this session yet.";
-  }
-
-  const entries = history.map((item) => `#${item.turn_id} ${item.summary}`);
-  return style === "detailed" ? `Recent router history: ${entries.join(" | ")}` : `Recent router history: ${entries.slice(-3).join(" | ")}`;
-}
-
-function buildAudioUrl(sessionId: string, turnId: number) {
-  return `/api/ai/audio?session=${encodeURIComponent(sessionId)}&turn=${turnId}`;
-}
-
-async function maybeTranslateText(text: string, language: string) {
-  if (!process.env.GROQ_API_KEY || language === defaultLanguage) {
-    return text;
-  }
-
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${process.env.GROQ_API_KEY}`
-    },
-    body: JSON.stringify({
-      model: defaultModel,
-      temperature: 0.2,
-      messages: [
-        {
-          role: "system",
-          content: `Translate the supplied Finca blockchain explanation into ${language}. Keep all blockchain facts unchanged and concise.`
-        },
-        {
-          role: "user",
-          content: text
-        }
-      ]
-    }),
-    cache: "no-store"
-  });
-
-  if (!response.ok) {
-    return text;
-  }
-
-  const json = (await response.json().catch(() => null)) as
-    | {
-        choices?: Array<{
-          message?: {
-            content?: string;
-          };
-        }>;
+    uiAction: "SHOW_BATCH_DETAILS",
+    apiCallsMade: [
+      { endpoint: "/blocks", method: "POST", service: "python_blockchain", ok: true },
+      { endpoint: "/blocks", method: "POST", service: "supabase", ok: true }
+    ],
+    executionResults: {
+      "/blocks": {
+        success: true,
+        block_index: block.index
       }
-    | null;
-
-  return json?.choices?.[0]?.message?.content?.trim() || text;
-}
-
-function shouldTreatCallFailureAsWarning(plan: RouterPlan, call: RouterApiCall) {
-  return call.service === "python_blockchain" && call.endpoint === "/validate" && ["explain_batch", "translate_explain", "voice_explain", "get_batch_details"].includes(plan.intent);
-}
-
-export async function buildRouterPlan(request: AiTurnRequest, history: HistoryContextItem[]): Promise<BuildRouterResult> {
-  const resolved = await resolveContext(request, history);
-  const heuristicIntent = detectIntentHeuristically(request.query, {
-    voiceMode: resolved.voiceMode,
-    language: resolved.language
-  });
-  const llmClassification = await maybeClassifyIntentWithGroq({
-    query: request.query,
-    history,
-    heuristicIntent,
-    language: resolved.language,
-    voiceMode: resolved.voiceMode
-  });
-  const intent = llmClassification?.intent ?? heuristicIntent;
-  const currentBatch = resolved.batchId ? await getBatchChain(resolved.batchId) : null;
-  const relevantHistory = selectRelevantHistory(history, resolved.batchId);
-  const confidence =
-    llmClassification?.confidence ??
-    (intent === "unknown" ? 0.4 : resolved.language !== defaultLanguage ? 0.82 : 0.94);
-
-  if (intent === "create_batch") {
-    const metadata = resolved.batchMetadata;
-    const missingFields = [
-      !metadata.batch_id ? "batch ID" : null,
-      !metadata.crop_name ? "crop name" : null,
-      !metadata.farmer_name ? "farmer name" : null,
-      !metadata.farm_location ? "farm location" : null
-    ].filter(Boolean) as string[];
-
-    if (metadata.batch_id && currentBatch) {
-      return {
-        plan: makeFollowUpPlan(
-          intent,
-          `Batch ${metadata.batch_id} already exists. Use a new batch ID or ask me to explain or validate the existing chain instead.`,
-          relevantHistory,
-          resolved.responseStyle
-        ),
-        currentBatch,
-        resolved
-      };
-    }
-
-    if (missingFields.length > 0) {
-      return {
-        plan: makeFollowUpPlan(
-          intent,
-          `I still need ${missingFields.join(", ")} to create the batch.`,
-          relevantHistory,
-          resolved.responseStyle
-        ),
-        currentBatch,
-        resolved
-      };
-    }
-
-    return {
-      plan: {
-        intent,
-        confidence,
-        requires_api_call: true,
-        api_calls: [blockchainPost("/batches", metadata as Record<string, unknown>)],
-        history_context_used: relevantHistory,
-        response_style: resolved.responseStyle,
-        tts_required: false,
-        follow_up_needed: false,
-        follow_up_question: null
-      },
-      currentBatch,
-      resolved
-    };
-  }
-
-  if (intent === "add_block") {
-    if (!resolved.batchId) {
-      return {
-        plan: makeFollowUpPlan(intent, "Which batch ID should I use for the new event?", relevantHistory, resolved.responseStyle),
-        currentBatch,
-        resolved
-      };
-    }
-
-    if (!currentBatch || currentBatch.blocks.length === 0) {
-      return {
-        plan: makeFollowUpPlan(intent, `I could not find chain state for batch ${resolved.batchId}.`, relevantHistory, resolved.responseStyle),
-        currentBatch,
-        resolved
-      };
-    }
-
-    if (!resolved.eventType) {
-      return {
-        plan: makeFollowUpPlan(intent, "What event type should I append to the batch?", relevantHistory, resolved.responseStyle),
-        currentBatch,
-        resolved
-      };
-    }
-
-    const previousBlock = currentBatch.blocks.at(-1)!;
-    const payload: CreateBlockPayload = {
-      batch_id: resolved.batchId,
-      event_type: resolved.eventType,
-      data: resolved.eventData,
-      previous_hash: previousBlock.hash,
-      index: previousBlock.index + 1
-    };
-
-    return {
-      plan: {
-        intent,
-        confidence,
-        requires_api_call: true,
-        api_calls: [blockchainPost("/blocks", payload as unknown as Record<string, unknown>)],
-        history_context_used: relevantHistory,
-        response_style: resolved.responseStyle,
-        tts_required: false,
-        follow_up_needed: false,
-        follow_up_question: null
-      },
-      currentBatch,
-      resolved
-    };
-  }
-
-  if (intent === "validate_chain" || intent === "tamper_check") {
-    if (!resolved.batchId) {
-      return {
-        plan: makeFollowUpPlan(intent, "Which batch should I validate?", relevantHistory, resolved.responseStyle),
-        currentBatch,
-        resolved
-      };
-    }
-
-    if (!currentBatch || currentBatch.blocks.length === 0) {
-      return {
-        plan: makeFollowUpPlan(intent, `I could not load any blocks for batch ${resolved.batchId}.`, relevantHistory, resolved.responseStyle),
-        currentBatch,
-        resolved
-      };
-    }
-
-    return {
-      plan: {
-        intent,
-        confidence: Math.max(confidence, 0.96),
-        requires_api_call: true,
-        api_calls: [blockchainPost("/validate", { blocks: currentBatch.blocks })],
-        history_context_used: relevantHistory,
-        response_style: resolved.responseStyle,
-        tts_required: false,
-        follow_up_needed: false,
-        follow_up_question: null
-      },
-      currentBatch,
-      resolved
-    };
-  }
-
-  if (intent === "get_dashboard_summary") {
-    return {
-      plan: {
-        intent,
-        confidence,
-        requires_api_call: true,
-        api_calls: [supabaseGet("dashboard_summary", null)],
-        history_context_used: relevantHistory,
-        response_style: resolved.responseStyle,
-        tts_required: false,
-        follow_up_needed: false,
-        follow_up_question: null
-      },
-      currentBatch,
-      resolved
-    };
-  }
-
-  if (intent === "get_batch_details" || intent === "explain_batch" || intent === "translate_explain" || intent === "voice_explain") {
-    if (!resolved.batchId) {
-      return {
-        plan: makeFollowUpPlan(
-          intent,
-          "Which batch should I explain or inspect?",
-          relevantHistory,
-          resolved.responseStyle,
-          intent === "voice_explain" || resolved.voiceMode
-        ),
-        currentBatch,
-        resolved
-      };
-    }
-
-    const apiCalls: RouterApiCall[] = [supabaseGet("batch_details", { batch_id: resolved.batchId })];
-
-    if (currentBatch?.blocks?.length) {
-      apiCalls.push(blockchainPost("/validate", { blocks: currentBatch.blocks }));
-    }
-
-    return {
-      plan: {
-        intent,
-        confidence,
-        requires_api_call: true,
-        api_calls: apiCalls,
-        history_context_used: relevantHistory,
-        response_style: resolved.responseStyle,
-        tts_required: intent === "voice_explain" || resolved.voiceMode,
-        follow_up_needed: false,
-        follow_up_question: null
-      },
-      currentBatch,
-      resolved
-    };
-  }
-
-  if (intent === "search_history") {
-    return {
-      plan: {
-        intent,
-        confidence,
-        requires_api_call: false,
-        api_calls: [],
-        history_context_used: relevantHistory,
-        response_style: resolved.responseStyle,
-        tts_required: false,
-        follow_up_needed: false,
-        follow_up_question: null
-      },
-      currentBatch,
-      resolved
-    };
-  }
-
-  return {
-    plan: makeFollowUpPlan("unknown", "Which batch ID or action should I use?", relevantHistory, resolved.responseStyle),
-    currentBatch,
-    resolved
+    },
+    historyUsed: resolvedBatch.historyUsed,
+    requiresUserAction: false,
+    followUpQuestion: null,
+    audioUrl: null,
+    plannedApiCalls,
+    historyMetadata: {
+      batch_id: draft.batch_id,
+      event_type: block.event_type,
+      hash: block.hash
+    },
+    apiResultSummary: `Added ${toTitleCase(block.event_type)} to batch ${draft.batch_id} as block ${block.index}.`,
+    ttsRequired: false
   };
 }
 
-export async function executeRouterPlan(input: {
-  request: AiTurnRequest;
-  turnId: number;
-  sessionId: string;
-  history: HistoryContextItem[];
-}): Promise<ExecutionContext & { envelope: AiResponseEnvelope; apiResultSummary: Record<string, unknown> | null }> {
-  const { plan, currentBatch, resolved } = await buildRouterPlan(input.request, input.history);
+async function handleValidationIntent(
+  request: NormalizedAIRequest,
+  decision: IntentDecision,
+  resolvedBatch: ResolvedBatchContext,
+  intent: "validate_chain" | "tamper_check"
+): Promise<RouterExecutionResult> {
+  if (!resolvedBatch.batchId) {
+    const question = "Which batch ID should I validate?";
+
+    return buildFollowUpResult({
+      assistantMessage: question,
+      intent,
+      confidence: decision.confidence,
+      followUpQuestion: question,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls: []
+    });
+  }
+
+  const blocks = await getBlocksByBatchIdServer(resolvedBatch.batchId);
+
+  if (blocks.length === 0) {
+    return buildFollowUpResult({
+      assistantMessage: `No blocks are stored for batch ${resolvedBatch.batchId}.`,
+      intent,
+      confidence: decision.confidence,
+      followUpQuestion: `I need a stored chain for batch ${resolvedBatch.batchId} before I can validate it.`,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls: []
+    });
+  }
+
+  const validationPayload = {
+    blocks: blocks.map((block) => ({
+      ...block,
+      timestamp: normalizeTimestampForValidation(block.timestamp)
+    }))
+  };
+
+  const plannedApiCalls: AIPlannedApiCall[] = [
+    {
+      service: "python_blockchain",
+      endpoint: "/validate",
+      method: "POST",
+      payload: validationPayload
+    }
+  ];
+
+  const rawValidation = await postBlockchainJson("/validate", validationPayload);
+  const validation = normalizeValidationResponse(rawValidation as Record<string, unknown>);
+  const latest = blocks.at(-1) ?? null;
+  const assistantMessage = buildValidationMessage(validation);
+
+  return {
+    assistantMessage,
+    intent,
+    confidence: decision.confidence,
+    data: {
+      batch_id: resolvedBatch.batchId,
+      valid: validation.valid,
+      invalid_index: validation.invalid_index ?? null,
+      details: validation.details ?? null
+    },
+    uiAction: "SHOW_VERIFICATION_RESULT",
+    apiCallsMade: [{ endpoint: "/validate", method: "POST", service: "python_blockchain", ok: true }],
+    executionResults: {
+      "/validate": {
+        valid: validation.valid,
+        invalid_index: validation.invalid_index ?? null
+      }
+    },
+    historyUsed: resolvedBatch.historyUsed,
+    requiresUserAction: false,
+    followUpQuestion: null,
+    audioUrl: null,
+    plannedApiCalls,
+    historyMetadata: {
+      batch_id: resolvedBatch.batchId,
+      event_type: latest?.event_type ?? null,
+      hash: latest?.hash ?? null
+    },
+    apiResultSummary: assistantMessage,
+    ttsRequired: false
+  };
+}
+
+async function handleBatchReadIntent(
+  request: NormalizedAIRequest,
+  decision: IntentDecision,
+  resolvedBatch: ResolvedBatchContext,
+  intent: "get_batch_details" | "explain_batch" | "translate_explain" | "voice_explain",
+  warnings: string[]
+): Promise<RouterExecutionResult> {
+  if (!resolvedBatch.batchId) {
+    const question = "Which batch ID should I explain?";
+
+    return buildFollowUpResult({
+      assistantMessage: question,
+      intent,
+      confidence: decision.confidence,
+      followUpQuestion: question,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls: []
+    });
+  }
+
+  const batch = await getBatchWithBlocksServer(resolvedBatch.batchId);
+
+  if (!batch) {
+    return buildFollowUpResult({
+      assistantMessage: `I could not find batch ${resolvedBatch.batchId}.`,
+      intent,
+      confidence: decision.confidence,
+      followUpQuestion: `Check the batch ID for ${resolvedBatch.batchId} and try again.`,
+      historyUsed: resolvedBatch.historyUsed,
+      plannedApiCalls: []
+    });
+  }
+
+  let assistantMessage = buildBatchExplanation(batch, request.responseStyle);
+  assistantMessage = await maybeTranslateMessage(assistantMessage, request, warnings);
+
+  if (intent === "voice_explain" || request.voiceMode) {
+    warnings.push("TTS is not configured yet, so audio_url is null even though voice mode was requested.");
+  }
+
+  const latest = batch.blocks.at(-1) ?? null;
+
+  return {
+    assistantMessage,
+    intent,
+    confidence: decision.confidence,
+    data: {
+      batch_id: batch.batch_id,
+      block_count: batch.blocks.length,
+      latest_event_type: latest?.event_type ?? null
+    },
+    uiAction: "SHOW_BATCH_DETAILS",
+    apiCallsMade: [{ endpoint: `/batches/${batch.batch_id}`, method: "GET", service: "supabase", ok: true }],
+    executionResults: {
+      batch: {
+        batch_id: batch.batch_id,
+        block_count: batch.blocks.length,
+        latest_hash: latest?.hash ?? null
+      }
+    },
+    historyUsed: resolvedBatch.historyUsed,
+    requiresUserAction: false,
+    followUpQuestion: null,
+    audioUrl: null,
+    plannedApiCalls: [
+      {
+        service: "supabase",
+        endpoint: `/batches/${batch.batch_id}`,
+        method: "GET"
+      }
+    ],
+    historyMetadata: {
+      batch_id: batch.batch_id,
+      event_type: latest?.event_type ?? null,
+      hash: latest?.hash ?? null
+    },
+    apiResultSummary: `Explained batch ${batch.batch_id} with ${batch.blocks.length} recorded block${batch.blocks.length === 1 ? "" : "s"}.`,
+    ttsRequired: intent === "voice_explain" || request.voiceMode
+  };
+}
+
+async function handleDashboardIntent(
+  request: NormalizedAIRequest,
+  decision: IntentDecision
+): Promise<RouterExecutionResult> {
+  const summaries = await getDashboardSummaryServer();
+  const assistantMessage = buildDashboardMessage(summaries, request.responseStyle);
+
+  return {
+    assistantMessage,
+    intent: "get_dashboard_summary",
+    confidence: decision.confidence,
+    data: {
+      batch_count: summaries.length,
+      total_blocks: summaries.reduce((total, batch) => total + batch.block_count, 0),
+      batches: summaries.slice(0, 5).map((batch) => ({
+        batch_id: batch.batch_id,
+        crop_name: batch.crop_name,
+        block_count: batch.block_count
+      }))
+    },
+    uiAction: "SHOW_DASHBOARD",
+    apiCallsMade: [{ endpoint: "/dashboard", method: "GET", service: "supabase", ok: true }],
+    executionResults: {
+      dashboard: {
+        batch_count: summaries.length
+      }
+    },
+    historyUsed: [],
+    requiresUserAction: false,
+    followUpQuestion: null,
+    audioUrl: null,
+    plannedApiCalls: [
+      {
+        service: "supabase",
+        endpoint: "/dashboard",
+        method: "GET"
+      }
+    ],
+    apiResultSummary: assistantMessage,
+    ttsRequired: false
+  };
+}
+
+async function handleSearchHistoryIntent(
+  request: NormalizedAIRequest,
+  decision: IntentDecision,
+  warnings: string[]
+): Promise<RouterExecutionResult> {
+  const searchTerm = request.query
+    .replace(/search history|history|what did i ask|recent query|last query/gi, "")
+    .trim();
+
+  const result = searchTerm
+    ? await searchHistoryContext(request.sessionId, searchTerm, 5)
+    : await loadHistoryContext(request.sessionId, 5);
+
+  if (result.warning) {
+    warnings.push(result.warning);
+  }
+
+  const historyItems = result.items;
+
+  if (historyItems.length === 0) {
+    return {
+      assistantMessage: "No matching AI history was found for this session yet.",
+      intent: "search_history",
+      confidence: decision.confidence,
+      data: {
+        results: []
+      },
+      uiAction: null,
+      apiCallsMade: [],
+      executionResults: {
+        history_matches: 0
+      },
+      historyUsed: [],
+      requiresUserAction: false,
+      followUpQuestion: null,
+      audioUrl: null,
+      plannedApiCalls: [
+        {
+          service: "supabase",
+          endpoint: "/ai_router_history",
+          method: "GET"
+        }
+      ],
+      apiResultSummary: "No matching AI history was found.",
+      ttsRequired: false
+    };
+  }
+
+  const assistantMessage = `I found ${historyItems.length} matching history item${historyItems.length === 1 ? "" : "s"}. Most recent: ${historyItems.at(-1)?.summary ?? "No summary available"}`;
+
+  return {
+    assistantMessage,
+    intent: "search_history",
+    confidence: decision.confidence,
+    data: {
+      results: historyItems
+    },
+    uiAction: null,
+    apiCallsMade: [{ endpoint: "/ai_router_history", method: "GET", service: "supabase", ok: true }],
+    executionResults: {
+      history_matches: historyItems.length
+    },
+    historyUsed: historyItems,
+    requiresUserAction: false,
+    followUpQuestion: null,
+    audioUrl: null,
+    plannedApiCalls: [
+      {
+        service: "supabase",
+        endpoint: "/ai_router_history",
+        method: "GET"
+      }
+    ],
+    apiResultSummary: assistantMessage,
+    ttsRequired: false
+  };
+}
+
+function handleUnknownIntent(request: NormalizedAIRequest, decision: IntentDecision): RouterExecutionResult {
+  const followUpQuestion =
+    "I can create a batch, add an event, validate a chain, explain a batch, or show a dashboard summary. What should I do?";
+
+  return {
+    assistantMessage: followUpQuestion,
+    intent: "unknown",
+    confidence: decision.confidence,
+    data: {},
+    uiAction: "SHOW_ERROR",
+    apiCallsMade: [],
+    executionResults: {},
+    historyUsed: [],
+    requiresUserAction: true,
+    followUpQuestion,
+    audioUrl: null,
+    plannedApiCalls: [],
+    apiResultSummary: followUpQuestion,
+    ttsRequired: false
+  };
+}
+
+async function executeIntent(
+  request: NormalizedAIRequest,
+  decision: IntentDecision,
+  history: AIHistoryEntry[],
+  warnings: string[]
+) {
+  const resolvedBatch = resolveBatchContext(request, history);
+  const combinedHistoryUsed = resolvedBatch.historyUsed;
+
+  switch (decision.intent) {
+    case "create_batch":
+      return handleCreateBatch(request, decision, resolvedBatch, history);
+    case "add_block":
+      return handleAddBlock(request, decision, resolvedBatch);
+    case "validate_chain":
+      return handleValidationIntent(request, decision, resolvedBatch, "validate_chain");
+    case "tamper_check":
+      return handleValidationIntent(request, decision, resolvedBatch, "tamper_check");
+    case "get_batch_details":
+      return handleBatchReadIntent(request, decision, resolvedBatch, "get_batch_details", warnings);
+    case "translate_explain":
+      return handleBatchReadIntent(request, decision, resolvedBatch, "translate_explain", warnings);
+    case "voice_explain":
+      return handleBatchReadIntent(request, decision, resolvedBatch, "voice_explain", warnings);
+    case "explain_batch":
+      return handleBatchReadIntent(request, decision, resolvedBatch, "explain_batch", warnings);
+    case "get_dashboard_summary":
+      return handleDashboardIntent(request, decision);
+    case "search_history":
+      return handleSearchHistoryIntent(request, decision, warnings);
+    default: {
+      const unknown = handleUnknownIntent(request, decision);
+
+      return {
+        ...unknown,
+        historyUsed: combinedHistoryUsed
+      };
+    }
+  }
+}
+
+function createHistoryMetadata(result: RouterExecutionResult) {
+  return {
+    ...(result.historyMetadata ?? {}),
+    ui_action: result.uiAction ?? null,
+    requires_user_action: result.requiresUserAction,
+    audio_url: result.audioUrl
+  } satisfies Record<string, JsonValue>;
+}
+
+export function getAIRouterVersion() {
+  return AI_ROUTER_VERSION;
+}
+
+export function getAIRouteSchema() {
+  return getSchemaDescription();
+}
+
+export async function runAIRouter(payload: AIQueryRequest): Promise<AIResponse> {
+  const request = parseRequest(payload);
+
+  if (!request.query) {
+    throw new Error("The `query` field is required.");
+  }
+
+  if (request.query.length > MAX_QUERY_LENGTH) {
+    throw new Error("The `query` field is too long.");
+  }
+
   const warnings: string[] = [];
+  const historyContext = await loadHistoryContext(request.sessionId, 8);
 
-  if (plan.follow_up_needed) {
-    return {
-      plan,
-      currentBatch,
-      resolved,
-      apiResultSummary: null,
-      envelope: {
-        assistant_message: plan.follow_up_question ?? "I need one more detail before I can route that task.",
-        intent: plan.intent,
-        confidence: plan.confidence,
-        router_plan: plan,
-        api_calls_made: [],
-        history_used: plan.history_context_used,
-        execution_results: {},
-        audio_url: null,
-        requires_user_action: true,
-        follow_up_question: plan.follow_up_question,
-        session_id: input.sessionId,
-        turn_id: input.turnId,
-        router_version: routerVersion,
-        warnings
-      }
-    };
+  if (historyContext.warning) {
+    warnings.push(historyContext.warning);
   }
 
-  const apiCallsMade: AiResponseEnvelope["api_calls_made"] = [];
-  const executionResults: Record<string, unknown> = {};
-  let activeBatch = currentBatch;
-  let validationResult: ValidationResponse | null = null;
-  let assistantMessage = "Task routed successfully.";
-  let apiResultSummary: Record<string, unknown> | null = null;
-  let audioUrl: string | null = null;
+  const decision = await decideIntent(request, historyContext.items);
+  const execution = await executeIntent(request, decision, historyContext.items, warnings);
+  const uiAction =
+    execution.uiAction ?? getUiAction(execution.intent, Boolean(execution.audioUrl), execution.requiresUserAction);
 
-  for (const call of plan.api_calls) {
-    try {
-      if (call.service === "python_blockchain" && call.endpoint === "/batches") {
-        const result = await fetchBlockchain<ApiMutationResponse>(call);
-        const payload = call.payload as unknown as CreateBatchPayload;
-        const returnedBlock = extractReturnedBlock(result, payload.batch_id);
+  const routerPlan = {
+    intent: execution.intent,
+    confidence: execution.confidence,
+    requires_api_call: execution.plannedApiCalls.length > 0,
+    api_calls: execution.plannedApiCalls,
+    history_context_used: execution.historyUsed,
+    response_style: request.responseStyle,
+    tts_required: Boolean(execution.ttsRequired),
+    follow_up_needed: execution.requiresUserAction,
+    follow_up_question: execution.followUpQuestion
+  };
 
-        if (!returnedBlock) {
-          throw new Error("The blockchain service did not return a usable genesis block.");
-        }
+  const historyLog = await logHistoryTurn({
+    sessionId: request.sessionId,
+    userQuery: request.query,
+    intent: execution.intent,
+    assistantMessage: execution.assistantMessage,
+    apiCall: execution.plannedApiCalls as unknown as JsonValue,
+    apiResultSummary: execution.apiResultSummary ?? execution.assistantMessage,
+    metadata: createHistoryMetadata({
+      ...execution,
+      uiAction
+    })
+  });
 
-        executionResults[call.endpoint] = result;
-        apiCallsMade.push({ endpoint: call.endpoint, method: call.method, service: call.service, ok: true });
-
-        try {
-          await persistBatchAndGenesisServer(
-            {
-              ...payload,
-              created_at: returnedBlock.timestamp
-            },
-            returnedBlock
-          );
-        } catch (error) {
-          warnings.push(error instanceof Error ? error.message : "Supabase persistence for the genesis block failed.");
-        }
-
-        activeBatch = {
-          ...payload,
-          created_at: returnedBlock.timestamp,
-          blocks: [returnedBlock]
-        };
-
-        assistantMessage = `Batch ${payload.batch_id} was created and its genesis block was issued as block 0.`;
-        apiResultSummary = {
-          success: true,
-          batch_id: payload.batch_id,
-          hash: returnedBlock.hash,
-          event_type: returnedBlock.event_type,
-          block_index: returnedBlock.index,
-          summary: assistantMessage
-        };
-        continue;
-      }
-
-      if (call.service === "python_blockchain" && call.endpoint === "/blocks") {
-        const result = await fetchBlockchain<ApiMutationResponse>(call);
-        const payload = call.payload as unknown as CreateBlockPayload;
-        const returnedBlock = extractReturnedBlock(result, payload.batch_id);
-
-        if (!returnedBlock) {
-          throw new Error("The blockchain service did not return a usable block.");
-        }
-
-        executionResults[call.endpoint] = result;
-        apiCallsMade.push({ endpoint: call.endpoint, method: call.method, service: call.service, ok: true });
-
-        try {
-          await persistBlockServer(returnedBlock);
-        } catch (error) {
-          warnings.push(error instanceof Error ? error.message : "Supabase persistence for the new block failed.");
-        }
-
-        if (activeBatch && activeBatch.batch_id === payload.batch_id) {
-          activeBatch = {
-            ...activeBatch,
-            blocks: [...activeBatch.blocks, returnedBlock]
-          };
-        }
-
-        assistantMessage = `Added ${toTitleCase(payload.event_type)} to batch ${payload.batch_id} as block ${returnedBlock.index}.`;
-        apiResultSummary = {
-          success: true,
-          batch_id: payload.batch_id,
-          hash: returnedBlock.hash,
-          event_type: returnedBlock.event_type,
-          block_index: returnedBlock.index,
-          summary: assistantMessage
-        };
-        continue;
-      }
-
-      if (call.service === "python_blockchain" && call.endpoint === "/validate") {
-        const rawValidation = await fetchBlockchain<
-          | ValidationResponse
-          | {
-              result?: ValidationResponse;
-              valid?: boolean;
-              is_valid?: boolean;
-              message?: string;
-              invalid_index?: number | null;
-              broken_index?: number | null;
-            }
-        >(call);
-
-        validationResult = normalizeValidationResponse(rawValidation);
-        executionResults[call.endpoint] = validationResult;
-        apiCallsMade.push({ endpoint: call.endpoint, method: call.method, service: call.service, ok: true });
-
-        assistantMessage = summarizeValidation(validationResult);
-        apiResultSummary = {
-          valid: validationResult.valid,
-          invalid_index: validationResult.invalid_index ?? null,
-          batch_id: resolved.batchId,
-          summary: assistantMessage
-        };
-        continue;
-      }
-
-      if (call.service === "supabase" && call.endpoint === "dashboard_summary") {
-        const dashboard = await getDashboardData();
-        executionResults.dashboard_summary = dashboard;
-        apiCallsMade.push({ endpoint: call.endpoint, method: call.method, service: call.service, ok: true });
-
-        assistantMessage = buildDashboardSummaryMessage(dashboard, plan.response_style);
-        apiResultSummary = {
-          batch_count: dashboard.length,
-          summary: assistantMessage
-        };
-        continue;
-      }
-
-      if (call.service === "supabase" && call.endpoint === "batch_details" && resolved.batchId) {
-        activeBatch = await getBatchChain(resolved.batchId);
-        executionResults.batch_details = activeBatch;
-        apiCallsMade.push({ endpoint: call.endpoint, method: call.method, service: call.service, ok: true });
-
-        assistantMessage = activeBatch
-          ? `Loaded batch ${activeBatch.batch_id} with ${activeBatch.blocks.length} recorded blocks.`
-          : `Batch ${resolved.batchId} was not found in Supabase.`;
-        apiResultSummary = {
-          batch_id: resolved.batchId,
-          block_count: activeBatch?.blocks.length ?? 0,
-          summary: assistantMessage
-        };
-      }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "The router failed while executing an API call.";
-      apiCallsMade.push({ endpoint: call.endpoint, method: call.method, service: call.service, ok: false });
-
-      if (shouldTreatCallFailureAsWarning(plan, call)) {
-        warnings.push(message);
-        continue;
-      }
-
-      throw error;
-    }
-  }
-
-  if (plan.intent === "validate_chain" || plan.intent === "tamper_check") {
-    if (!validationResult) {
-      throw new Error("Validation did not return a result.");
-    }
-
-    assistantMessage = summarizeValidation(validationResult);
-    apiResultSummary = {
-      valid: validationResult.valid,
-      invalid_index: validationResult.invalid_index ?? null,
-      batch_id: resolved.batchId,
-      summary: assistantMessage
-    };
-  }
-
-  if (plan.intent === "get_batch_details" || plan.intent === "explain_batch" || plan.intent === "translate_explain" || plan.intent === "voice_explain") {
-    if (!activeBatch) {
-      assistantMessage = resolved.batchId
-        ? `I could not find batch ${resolved.batchId} in Supabase.`
-        : "I could not determine which batch to explain.";
-      warnings.push("Batch explanation was requested without a readable batch chain.");
-    } else {
-      const baseExplanation =
-        plan.intent === "get_batch_details"
-          ? `Batch ${activeBatch.batch_id} has ${activeBatch.blocks.length} blocks. ${buildBatchExplanation(activeBatch, validationResult, plan.response_style)}`
-          : buildBatchExplanation(activeBatch, validationResult, plan.response_style);
-
-      assistantMessage =
-        plan.intent === "translate_explain" || plan.intent === "voice_explain" || resolved.language !== defaultLanguage
-          ? await maybeTranslateText(baseExplanation, resolved.language)
-          : baseExplanation;
-    }
-
-    apiResultSummary = {
-      batch_id: resolved.batchId,
-      block_count: activeBatch?.blocks.length ?? 0,
-      valid: validationResult?.valid ?? null,
-      summary: assistantMessage
-    };
-  }
-
-  if (plan.intent === "search_history") {
-    assistantMessage = buildHistorySummary(plan.history_context_used, plan.response_style);
-    apiResultSummary = {
-      history_count: plan.history_context_used.length,
-      batch_id: resolved.batchId,
-      summary: assistantMessage
-    };
-  }
-
-  if (plan.tts_required) {
-    audioUrl = buildAudioUrl(input.sessionId, input.turnId);
-    warnings.push("TTS is scaffolded but still needs a real provider wired into /api/ai/audio.");
+  if (historyLog.warning) {
+    warnings.push(historyLog.warning);
   }
 
   return {
-    plan,
-    currentBatch: activeBatch,
-    resolved,
-    apiResultSummary,
-    envelope: {
-      assistant_message: assistantMessage,
-      intent: plan.intent,
-      confidence: plan.confidence,
-      router_plan: plan,
-      api_calls_made: apiCallsMade,
-      history_used: plan.history_context_used,
-      execution_results: executionResults,
-      audio_url: audioUrl,
-      requires_user_action: false,
-      follow_up_question: null,
-      session_id: input.sessionId,
-      turn_id: input.turnId,
-      router_version: routerVersion,
-      warnings
-    }
+    assistant_message: execution.assistantMessage,
+    intent: execution.intent,
+    confidence: execution.confidence,
+    ui_action: uiAction,
+    data: execution.data,
+    router_plan: routerPlan,
+    api_calls_made: execution.apiCallsMade,
+    history_used: execution.historyUsed,
+    execution_results: execution.executionResults,
+    audio_url: execution.audioUrl,
+    requires_user_action: execution.requiresUserAction,
+    follow_up_question: execution.followUpQuestion,
+    session_id: request.sessionId,
+    turn_id: historyLog.turnId ?? undefined,
+    router_version: AI_ROUTER_VERSION,
+    warnings
   };
 }

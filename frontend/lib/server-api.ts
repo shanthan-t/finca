@@ -1,20 +1,53 @@
 const placeholderApiUrl = "https://your-render-url.onrender.com/api/v1";
-const localApiUrl = "http://127.0.0.1:8000/api/v1";
 
 export function getServerApiUrl() {
-  const hostPort = process.env.API_HOSTPORT?.trim();
-  const constructedHostPortUrl = hostPort ? `http://${hostPort}/api/v1` : null;
-  const configuredUrl =
-    process.env.API_URL ??
-    constructedHostPortUrl ??
-    process.env.NEXT_PUBLIC_API_URL ??
-    (process.env.NODE_ENV === "development" ? localApiUrl : "");
+  const hostport = process.env.API_HOSTPORT?.trim() ?? "";
+  const configuredUrl = process.env.API_URL?.trim() ?? process.env.NEXT_PUBLIC_API_URL?.trim() ?? "";
 
-  if (!configuredUrl || (process.env.NODE_ENV !== "development" && configuredUrl === placeholderApiUrl)) {
+  if (hostport) {
+    const prefixed = /^https?:\/\//.test(hostport) ? hostport : `http://${hostport}`;
+    const normalized = prefixed.replace(/\/+$/, "");
+
+    return normalized.endsWith("/api/v1") ? normalized : `${normalized}/api/v1`;
+  }
+
+  if (!configuredUrl || configuredUrl === placeholderApiUrl) {
     throw new Error("API_URL is missing. Configure API_URL, API_HOSTPORT, or NEXT_PUBLIC_API_URL on the server.");
   }
 
   return configuredUrl.replace(/\/+$/, "");
+}
+
+export async function postBlockchainJson<T>(path: string, payload: unknown): Promise<T> {
+  const upstream = await fetch(`${getServerApiUrl()}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(payload),
+    cache: "no-store"
+  });
+
+  const data = (await upstream.json().catch(() => null)) as
+    | (T & {
+        message?: string;
+      })
+    | null;
+
+  if (!upstream.ok) {
+    const message =
+      data && typeof data === "object" && "message" in data && typeof data.message === "string"
+        ? data.message
+        : `Blockchain service request failed with status ${upstream.status}.`;
+
+    throw new Error(message);
+  }
+
+  if (!data) {
+    throw new Error("The blockchain service returned an empty response.");
+  }
+
+  return data;
 }
 
 export async function forwardBlockchainPost(request: Request, path: string) {
