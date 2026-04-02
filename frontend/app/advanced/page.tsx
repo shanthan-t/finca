@@ -17,7 +17,7 @@ export async function generateMetadata(): Promise<Metadata> {
 
 export default function AdvancedModePage() {
   const language = getRequestLanguage();
-  const copy = getAdvancedCopy(language);
+  const copy = getAdvancedCopy();
   const t = createTranslator(language);
 
   const localizedFlow = {

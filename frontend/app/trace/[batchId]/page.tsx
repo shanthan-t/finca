@@ -6,11 +6,7 @@ import { getBatchChain } from "@/lib/data";
 import { createTranslator } from "@/lib/i18n";
 import { getRequestLanguage } from "@/lib/i18n-server";
 
-export async function generateMetadata({
-  params
-}: {
-  params: { batchId: string };
-}): Promise<Metadata> {
+export async function generateMetadata(): Promise<Metadata> {
   const language = getRequestLanguage();
   const t = createTranslator(language);
   return {

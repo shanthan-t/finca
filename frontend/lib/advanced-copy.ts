@@ -1,4 +1,4 @@
-import type { AppLanguage } from "@/lib/i18n";
+
 
 type CopyCard = {
   title: string;
@@ -96,6 +96,6 @@ const copyTemplate: AdvancedCopy = {
   }
 };
 
-export function getAdvancedCopy(_language: AppLanguage): AdvancedCopy {
+export function getAdvancedCopy(): AdvancedCopy {
   return copyTemplate;
 }

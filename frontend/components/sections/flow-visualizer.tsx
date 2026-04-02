@@ -5,7 +5,7 @@ import { ShieldCheck, Warehouse, Sprout, Truck, Store } from "lucide-react";
 import gsap from "gsap";
 
 import { cn } from "@/lib/utils";
-import type { AdvancedCopy } from "@/lib/advanced-copy";
+
 
 interface FlowVisualizerProps {
   copy: {
